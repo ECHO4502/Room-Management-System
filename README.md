@@ -1,0 +1,162 @@
+﻿# 客房管理系统（Room Management System）
+
+面向单家民宿私有部署的客房管理系统：无登录认证、开箱即用，支持全日租、钟点房、长租三种计费方式，支持多门店。
+
+- 当前版本：1.1.0
+- 作者：ECHO4502
+
+## 技术栈
+
+- 后端：Python 3.10+ / FastAPI / SQLite（原生 `sqlite3` 驱动，无 ORM）
+- 前端：Vue 3 + Element Plus + Vant 4（PC / 移动端自适应，FastAPI 直接托管）
+- 打包：PyInstaller 打包为单文件 exe，Windows 系统托盘后台守护
+
+## 目录结构
+
+```text
+Room-Management-System/
+├── backend/
+│   ├── main.py              # FastAPI 入口与 API 路由
+│   ├── database.py          # SQLite 连接、初始化、示例房间种子数据
+│   ├── models.py            # 数据表 DDL
+│   ├── crud.py              # 数据库操作函数
+│   ├── schemas.py           # Pydantic 请求/响应模型
+│   ├── utils.py             # 时间、冲突检测、价格计算、备份
+│   ├── logger.py            # 日志系统（控制台 + 文件滚动）
+│   └── tray.py              # Windows 系统托盘
+├── frontend/
+│   ├── index.html           # 单页入口
+│   ├── app.js               # Vue 3 主应用（PC + 移动端双模）
+│   ├── style.css            # 自定义样式
+│   ├── vite.config.js       # Vite 配置（开发代理）
+│   └── vendor/              # Vue / Element Plus 离线依赖（build.py 自动下载）
+├── data/
+│   └── hotel.db             # SQLite 数据库（首次启动自动生成，不入库）
+├── build.py                 # PyInstaller 打包脚本
+├── requirements.txt         # Python 依赖
+└── 使用说明.txt               # 老板操作手册（随 exe 交付）
+```
+
+## 快速开始（开发模式）
+
+```bash
+cd Room-Management-System
+python -m venv .venv
+.venv\Scripts\activate          # Windows
+pip install -r requirements.txt
+python backend/main.py
+```
+
+浏览器访问 <http://127.0.0.1:8000>，API 文档见 <http://127.0.0.1:8000/docs>。
+
+首次启动会自动创建数据表、默认设置、1 个示例房间和默认入住渠道。
+
+## 前端开发（Vite）
+
+前端为 Vue 3 Composition API + Element Plus + Vant 4，运行在 Vite 开发服务器（端口 5173），
+`/api` 请求通过代理转发到后端（端口 8000），因此开发时需要先启动后端。
+屏幕宽度 < 768px 自动切换移动端界面（日期滑动 + 房间卡片 + 底部弹层）。
+
+```bash
+cd Room-Management-System/frontend
+npm install        # 或 pnpm install
+npm run dev        # 打开 http://127.0.0.1:5173
+```
+
+构建生产版本：
+
+```bash
+npm run build      # 产物输出到 frontend/dist，后端启动时自动优先托管 dist
+```
+
+后端静态托管优先级：`frontend/dist`（构建产物）> `frontend/`（源码直连场景）。
+
+可通过环境变量调整启动参数：
+
+| 环境变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `HOTEL_HOST` | `0.0.0.0` | 监听地址（局域网其他设备可访问） |
+| `HOTEL_PORT` | `8000` | 监听端口（被占用时自动顺延） |
+| `HOTEL_DB_PATH` | `data/hotel.db` | 数据库文件路径 |
+
+## 打包为 exe
+
+```bash
+python build.py
+```
+
+打包完成后 exe 位于 `dist\客房管理系统.exe`。运行 exe 后自动打开浏览器访问
+`http://127.0.0.1:8000`；数据库自动生成在 exe 同级目录 `data/hotel.db`（升级不丢数据）。
+前端离线依赖缺失时，`build.py` 会自动下载到 `frontend/vendor/`。
+
+## 业务规则
+
+- 房间：所有房间均为普通房间，品类（标准间/大床房/套房/双床房）仅用于展示；编辑页可设置「全日价」与「钟点价」两个价格。
+- 计费方式：`full_day` 全日租（默认入住日 14:00 入住、离店日 12:00 退房，按晚计费）、`hourly` 钟点房（按小时计费，自动计价上限为日租价）、`long` 长租（按日计价，支持日结收款或一次性结算）。
+- 结算方式：日租与钟点房可选择「入住前实收」或「退房到账」；先付订单创建即计入收支；退房时可按实际收款调整金额并自动标记多收/少收；提前退房/取消时可登记退回金额并从收支扣除。
+- 订单状态流转：`已预订 → 已入住 → 已退房`；`已预订 → 已取消`。
+- 房态网格（时段化）：订单只占用实际入住时段（全日租占 14:00 至次日 12:00，钟点房按实际时间，长租逐日标注），占用色块内显示客人姓名、来源与价格，颜色按入住渠道区分；已退房订单变灰并以斜线标记；跨天订单不截断，空白时段仍可继续预订。
+- 多门店：房态总览下方提供门店分页，可手动新增并命名门店；房间 / 订单 / 收支均按门店隔离。
+- 时间轴：24 小时时间轴视图，支持切换日期查看各房间占用与已退房订单。
+- 订单管理：支持按订单号 / 客人姓名 / 手机号、房间、状态、类型及日期范围（全部 / 年 / 月 / 日，全部可自选起止日期）筛选。
+- 收支明细：收入与支出（可新增、删除、编辑）、退费、订单关联自动备注；按年 / 月 / 日 / 全部（全部可自选起止日期）查询，支持翻页与返回上一级。
+- 入住渠道：设置页可自定义渠道名称与颜色（10+ 种颜色可选），网格按渠道颜色区分。
+- 房间管理：启用 / 停用、维修开关，状态与启用状态筛选。
+- 数据与权限：无登录认证，适合单机 / 局域网私有部署；房间删除为软删除（停用）；订单删除为物理删除，不可恢复。
+
+## 数据备份
+
+- 一键备份：设置页「一键备份并下载」通过 sqlite3 备份 API 生成 ZIP 供下载。
+- 自动备份：系统每次启动自动备份到数据库同级 `backups/` 目录（按日期命名，保留最近 7 份）。
+- 备份接口：`GET /api/backup/download`（下载 ZIP）、`GET /api/db-info`（房间 / 订单数、版本号、作者）。
+
+## 局域网与手机扫码访问
+
+- 服务默认绑定 `0.0.0.0` 并自动探测局域网 IP（如 192.168.x.x），启动时控制台打印手机访问地址；端口被占用时自动顺延（8000 → 8001 …）。
+- 设置页「手机扫码访问」展示二维码（`GET /api/qrcode` 返回 PNG），手机连同一 Wi-Fi 扫码即可打开系统。
+- 打包后的 exe 双击运行会自动打开本机浏览器（PC 走 http://127.0.0.1:8000），并驻留系统托盘。
+
+## 打包与交付
+
+```bash
+.venv\Scripts\python.exe build.py
+```
+
+- `build.py` 会先确认前端构建产物（`frontend/dist`），再执行 PyInstaller 打包为单文件 exe。
+- 交付物在 `dist/`：`客房管理系统.exe`（单文件）+ `使用说明.txt`。
+- 数据库不打包：首次运行自动在 exe 同级创建 `data/hotel.db`；启动时自动备份、写 `ip.txt`、
+  尝试放行防火墙端口（无管理员权限时静默跳过），并自动打开本机浏览器。
+- 打包不覆盖现有文件：旧的 `dist/`、`frontend/dist` 等保留，方便调试回溯。
+
+旧库迁移（「全日房/钟点房」结构 → 普通房间结构）：
+
+```bash
+python migrate_room_type.py
+```
+
+服务启动时也会自动执行同样的迁移，无需手动操作。
+
+## API 概览（主要接口）
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/db-info` | 系统信息（版本 / 作者 / 房间数 / 订单数） |
+| GET | `/api/qrcode` | 局域网访问二维码（PNG） |
+| GET | `/api/backup/download` | 一键备份并下载 ZIP |
+| GET | `/api/stores` | 门店列表 |
+| GET | `/api/rooms` | 房间列表（支持状态、关键字过滤） |
+| GET | `/api/available-rooms` | 指定时间段可预订的房间（start_ts/end_ts） |
+| POST/PUT/DELETE | `/api/rooms` | 房间增改删（软删除） |
+| GET | `/api/orders` | 订单列表（状态、类型、房间、关键字、日期区间过滤） |
+| POST | `/api/orders` | 新建订单（价格计算 + 冲突检测） |
+| PUT/DELETE | `/api/orders/{id}` | 修改 / 删除订单 |
+| POST | `/api/orders/{id}/checkin` | 办理入住 |
+| POST | `/api/orders/{id}/checkout` | 办理退房（按实际时长结算、多收/少收标记） |
+| POST | `/api/orders/{id}/cancel` | 取消订单 |
+| POST | `/api/orders/{id}/extend` | 续住 |
+| GET/POST | `/api/orders/{id}/payments` | 长租日结收款记录 |
+| GET | `/api/statistics/today` | 今日应到 / 应退 / 总收入 |
+| GET | `/api/statistics/revenue` | 收支明细（年 / 月 / 日 / 全部，全部可自选日期范围） |
+| GET | `/api/room-status` | 日期范围内房态（时段化占用段） |
+| GET/POST/PUT/DELETE | `/api/expenses` | 支出 / 手动收支管理 |
+| GET/POST/PUT/DELETE | `/api/channels` | 入住渠道管理 |

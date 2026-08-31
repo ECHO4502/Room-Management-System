@@ -1,0 +1,25 @@
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+build/
+dist/
+*.spec
+.idea/
+*.log
+frontend/vendor/
+frontend/dist/
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/backups/
+
+# 运行产物与临时文件
+logs/
+ip.txt
+Thumbs.db
+.DS_Store
+*.bak
+*.bak_*
+tmp_*.json
+data/*.db-journal

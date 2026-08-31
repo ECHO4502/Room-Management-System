@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="light" />
+  <title>客房管理系统</title>
+  <style>
+    /* 关键内联样式：最先加载，强制浅色主题，防止系统高对比度/浏览器自动深色把文字改成白色 */
+    html {
+      color-scheme: light !important;
+      forced-color-adjust: none !important;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

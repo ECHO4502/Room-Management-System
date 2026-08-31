@@ -1,0 +1,1188 @@
+:root {
+  /* 声明浅色配色，避免 Edge 自动深色模式强制改文字颜色导致白字白底 */
+  color-scheme: light !important;
+  --brand: #409eff;
+  --page-bg: #f0f2f5;
+  --card-shadow: 0 1px 3px rgba(16, 24, 40, .06);
+}
+
+/* ============================================================
+   强制浅色主题（防白字白底）
+   Edge 自动深色 / 系统高对比度会把文字强制改成白色。
+   forced-color-adjust 是继承属性，加在根节点后全页生效；
+   下面再给主要文字组件固定颜色作为双重保险。
+   ============================================================ */
+html {
+  color-scheme: light !important;
+  forced-color-adjust: none !important;
+}
+
+* { forced-color-adjust: none; box-sizing: border-box; }
+
+body {
+  color: #303133 !important;
+  background-color: #f0f2f5 !important;
+}
+
+/* 按钮与右上角导航 */
+.el-button { forced-color-adjust: none !important; }
+.el-button:not(.is-link):not(.is-text) { color: #606266 !important; }
+.el-button--primary:not(.is-link):not(.is-text):not(.is-plain),
+.el-button--success:not(.is-link):not(.is-text):not(.is-plain),
+.el-button--warning:not(.is-link):not(.is-text):not(.is-plain),
+.el-button--danger:not(.is-link):not(.is-text):not(.is-plain),
+.el-button--info:not(.is-link):not(.is-text):not(.is-plain) { color: #fff !important; }
+/* 描边（plain）按钮：文字用对应主题色，避免白字看不清 */
+.el-button--primary.is-plain:not(.is-link):not(.is-text) { color: #409eff !important; }
+.el-button--success.is-plain:not(.is-link):not(.is-text) { color: #67c23a !important; }
+.el-button--warning.is-plain:not(.is-link):not(.is-text) { color: #e6a23c !important; }
+.el-button--danger.is-plain:not(.is-link):not(.is-text) { color: #f56c6c !important; }
+.el-button--info.is-plain:not(.is-link):not(.is-text) { color: #909399 !important; }
+/* 描边按钮悬停：背景变主题色时文字转白，避免蓝字蓝底看不清 */
+.el-button--primary.is-plain:not(.is-link):not(.is-text):hover,
+.el-button--success.is-plain:not(.is-link):not(.is-text):hover,
+.el-button--warning.is-plain:not(.is-link):not(.is-text):hover,
+.el-button--danger.is-plain:not(.is-link):not(.is-text):hover,
+.el-button--info.is-plain:not(.is-link):not(.is-text):hover { color: #fff !important; }
+.el-button.is-link { color: #409eff !important; }
+.el-button.is-link.is-success { color: #67c23a !important; }
+.el-button.is-link.is-warning { color: #e6a23c !important; }
+.el-button.is-link.is-danger { color: #f56c6c !important; }
+.el-button.is-link.is-info { color: #909399 !important; }
+
+/* 主要文字兜底色 */
+.m-refresh { color: #323233 !important; }
+
+/* 移动端导航：标题靠左，右侧按钮清晰分隔 */
+.m-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #1f2d3d;
+  white-space: nowrap;
+}
+.m-nav-item {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  margin-left: 8px;
+  border-radius: 12px;
+  background: #f2f3f5;
+  color: #323233;
+  font-size: 13px;
+}
+
+/* 移动端订单管理 */
+.m-orders-filter {
+  display: flex;
+  gap: 8px;
+  padding: 4px 10px;
+  flex-wrap: wrap;
+  align-items: center;
+  background: #fff;
+}
+.m-orders-filter .el-select { flex: 1; min-width: 104px; }
+.m-orders-filter .el-date-editor { width: auto !important; flex: 1; min-width: 0; }
+.m-orders-filter .el-date-editor--daterange { flex: 1.6; }
+.m-orders-filter .el-input { flex: 1.4; min-width: 120px; }
+.m-order-list { padding: 10px; display: flex; flex-direction: column; gap: 10px; }
+.m-order-card {
+  background: #fff;
+  border-radius: 10px;
+  padding: 12px;
+  box-shadow: var(--card-shadow);
+}
+.m-order-head { display: flex; align-items: center; gap: 8px; }
+.m-order-no { font-weight: 700; color: #1f2d3d; flex: 1; font-size: 14px; }
+.m-order-type {
+  font-size: 12px;
+  color: #409eff;
+  background: #ecf5ff;
+  border-radius: 8px;
+  padding: 1px 7px;
+}
+.m-order-status { font-size: 12px; color: #909399; }
+.m-order-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 8px;
+  color: #606266;
+  font-size: 13px;
+}
+.m-order-empty { text-align: center; color: #98a2b3; padding: 30px 0; }
+.m-order-actions { display: flex; justify-content: flex-end; margin-top: 8px; }
+.stat-label { color: #667085 !important; }
+.range-label { color: #667085 !important; }
+.room-no { color: #1f2d3d !important; }
+.room-name { color: #606266 !important; }
+.grid-head { color: #606266 !important; }
+.cell-label { color: #67c23a !important; }
+.legend-item { color: #606266 !important; }
+.store-label { color: #1f2d3d !important; }
+.store-tab { color: #606266 !important; }
+.store-tab.is-active { color: #fff !important; }
+
+/* Element Plus 组件文字 */
+.el-dialog__title { color: #303133 !important; }
+.el-form-item__label { color: #606266 !important; }
+.el-input__inner { color: #606266 !important; }
+.el-textarea__inner { color: #606266 !important; }
+.el-table th.el-table__cell { color: #909399 !important; }
+.el-table td.el-table__cell { color: #606266 !important; }
+.el-tabs__item { color: #303133 !important; }
+.el-tabs__item.is-active { color: #409eff !important; }
+.el-radio__label { color: #606266 !important; }
+.el-checkbox__label { color: #606266 !important; }
+.el-select__wrapper .el-select__placeholder { color: #a8abb2 !important; }
+.el-picker-panel .el-date-table td .cell { color: #606266 !important; }
+.el-picker-panel .el-date-table td.today .cell { color: #409eff !important; }
+
+/* Vant 移动端组件文字（注意：带色按钮/激活项放在通用文字规则之后） */
+.van-nav-bar__title { color: #323233 !important; }
+.van-cell__title, .van-cell__value { color: #323233 !important; }
+.van-field__control { color: #323233 !important; }
+.van-field__control::placeholder { color: #c8c9cc !important; }
+.van-tab { color: #646566 !important; }
+.van-tab.van-tab--active { color: #1989fa !important; }
+.van-button { color: #323233 !important; }
+.van-button--primary, .van-button--danger { color: #fff !important; }
+/* Vant 描边（plain）按钮/标签：文字用主题色 */
+.van-button--primary.van-button--plain { color: #1989fa !important; }
+.van-button--danger.van-button--plain { color: #ee0a24 !important; }
+.van-button--success.van-button--plain { color: #07c160 !important; }
+.van-button--warning.van-button--plain { color: #ff976a !important; }
+.van-tag--primary.van-tag--plain { color: #1989fa !important; }
+.van-tag--primary:not(.van-tag--plain) { color: #fff !important; }
+.m-day-label { color: #606266 !important; }
+.m-room-name { color: #606266 !important; }
+.m-free { color: #67c23a !important; }
+.strip-seg { color: #fff !important; }
+.day-tag { color: #fff !important; }
+.m-day.is-active { color: #fff !important; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  font-family: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+  background: var(--page-bg);
+  color: #303133;
+  font-size: 14px;
+}
+
+.page {
+  max-width: 1680px;
+  margin: 0 auto;
+  padding: 16px 20px 40px;
+}
+
+/* ---------------- 顶部 ---------------- */
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.title {
+  margin: 0;
+  font-size: 22px;
+  color: #1f2d3d;
+}
+
+.subtitle {
+  margin-left: 8px;
+  color: #98a2b3;
+  font-size: 12px;
+}
+
+.top-right {
+  display: flex;
+  gap: 12px;
+}
+
+.stat-card {
+  background: #fff;
+  border-radius: 10px;
+  padding: 10px 18px;
+  box-shadow: var(--card-shadow);
+  text-align: center;
+  min-width: 112px;
+}
+
+.stat-value { font-size: 22px; font-weight: 700; }
+.stat-arrive { color: #409eff; }
+.stat-checkout { color: #e6a23c; }
+.stat-income { color: #f56c6c; }
+.stat-label { font-size: 12px; color: #667085; margin-top: 2px; }
+
+/* ---------------- 日期导航 ---------------- */
+.date-nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  background: #fff;
+  border-radius: 10px;
+  padding: 10px 14px;
+  box-shadow: var(--card-shadow);
+  margin-bottom: 10px;
+}
+
+.date-buttons {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.date-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.range-label {
+  color: #667085;
+  font-size: 13px;
+  margin-left: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------------- 房态网格 ---------------- */
+.grid-wrap {
+  overflow: auto;
+  max-height: calc(100vh - 230px);
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: var(--card-shadow);
+}
+
+.grid {
+  display: grid;
+  min-width: max-content;
+}
+
+.grid-head {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: #f5f7fa;
+  padding: 6px 4px;
+  text-align: center;
+  font-size: 12px;
+  color: #606266;
+  border-bottom: 1px solid #e4e7ed;
+  border-right: 1px solid #eef0f4;
+}
+
+.grid-room-head {
+  left: 0;
+  z-index: 4;
+  font-weight: 600;
+}
+
+.grid-day-head.is-today {
+  background: #ecf5ff;
+  color: #409eff;
+  font-weight: 600;
+}
+
+.grid-day-head { cursor: pointer; }
+.grid-day-head.is-selected {
+  background: #409eff;
+  color: #fff;
+  font-weight: 700;
+}
+.grid-day-head.is-selected .day-week { color: rgba(255, 255, 255, .85); }
+
+.day-tag {
+  font-size: 10px;
+  color: #fff;
+  background: #409eff;
+  border-radius: 8px;
+  padding: 0 5px;
+  display: inline-block;
+  margin-top: 2px;
+}
+
+.grid-room {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: #fff;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid #eef0f4;
+  border-right: 1px solid #e4e7ed;
+}
+
+.room-no {
+  font-weight: 700;
+  color: #1f2d3d;
+  min-width: 34px;
+}
+
+.room-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #606266;
+  font-size: 13px;
+}
+
+.grid-cell {
+  height: 52px;
+  position: relative;
+  cursor: pointer;
+  font-size: 11px;
+  border-bottom: 1px solid rgba(0, 0, 0, .04);
+  border-right: 1px solid rgba(0, 0, 0, .04);
+  user-select: none;
+}
+
+.grid-cell.st-free { background: #fff; }
+.grid-cell.st-partial { background: #FAFAFA; }
+.grid-cell.st-maintenance {
+  background: #C0C4CC;
+  color: #606266;
+  cursor: not-allowed;
+}
+
+.cell-label {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #67C23A;
+  font-size: 11px;
+}
+.grid-cell.st-maintenance .cell-label { color: #606266; }
+
+.cell-strip {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+}
+
+.strip-seg {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  /* 在白色单元格之上(z-index:1)，低于左侧房号列(z-index:2)与顶部日期头(z-index:3/4) */
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  padding: 0 4px;
+  font-size: 10px;
+  line-height: 1.2;
+  color: #fff;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.strip-seg:hover { filter: brightness(1.08); }
+
+/* 日结订单合并长条：内部按天竖线分割，未收日期红虚线提醒 */
+.strip-label { position: relative; z-index: 2; }
+.seg-day {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+}
+.seg-day:not(.is-first) { border-left: 1px solid rgba(255, 255, 255, .7); }
+.seg-day.pay-unpaid {
+  border: 2px dashed #f56c6c;
+  box-sizing: border-box;
+  background: rgba(245, 108, 108, .18);
+}
+
+/* 已入住：深色描边方便确认 */
+.strip-seg.is-checkedin {
+  box-shadow: inset 0 0 0 2px rgba(31, 45, 61, .75);
+}
+
+/* 已退房：灰色 + 斜线填充（保留在网格中便于追溯） */
+.strip-seg.is-checkedout {
+  background: repeating-linear-gradient(45deg, #d9dde3 0 5px, #c0c4cc 5px 10px) !important;
+  color: #5c6470 !important;
+  opacity: .9;
+}
+
+/* 日结订单：未收日期红色虚线提醒，已收日期正常显示 */
+.strip-seg.pay-unpaid {
+  border: 2px dashed #f56c6c;
+  box-sizing: border-box;
+}
+.legend-paid { background: #67c23a; }
+.legend-unpaid {
+  border: 2px dashed #f56c6c;
+  background: rgba(255, 255, 255, .4);
+  box-sizing: border-box;
+}
+
+/* ---------------- 图例 ---------------- */
+.legend {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  margin-top: 12px;
+  color: #606266;
+  font-size: 13px;
+  flex-wrap: wrap;
+}
+
+.legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.legend-dot { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+.legend-stripe {
+  background: repeating-linear-gradient(45deg, #f8cf8b 0 4px, #E6A23C 4px 8px);
+}
+.legend-stripe-gray {
+  background: repeating-linear-gradient(45deg, #d9dde3 0 3px, #c0c4cc 3px 6px);
+}
+.legend-hint { color: #98a2b3; margin-left: auto; font-size: 12px; }
+
+.no-room {
+  color: #f56c6c;
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+/* ---------------- 今日时间轴 ---------------- */
+.status-tabs { margin-bottom: 10px; }
+
+.tl-date-hint {
+  color: #667085;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+.tl-nav {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.tl-nav .tl-date-hint { margin-bottom: 0; }
+
+.timeline-panel {
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: var(--card-shadow);
+  overflow-x: hidden;
+  overflow-y: auto;
+  max-height: calc(100vh - 230px);
+}
+
+.tl-head {
+  display: flex;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #fff;
+  border-bottom: 1px solid #e4e7ed;
+}
+
+.tl-room-col {
+  width: 150px;
+  min-width: 150px;
+  padding: 8px 10px;
+  font-weight: 600;
+  color: #606266;
+  background: #f5f7fa;
+}
+
+.tl-axis {
+  flex: 1;
+  position: relative;
+  height: 34px;
+}
+
+.tl-tick {
+  position: absolute;
+  top: 10px;
+  transform: translateX(-50%);
+  font-size: 11px;
+  color: #909399;
+}
+
+.tl-row {
+  display: flex;
+  border-bottom: 1px solid #eef0f4;
+}
+
+.tl-room {
+  width: 150px;
+  min-width: 150px;
+  padding: 6px 10px;
+  font-size: 13px;
+  color: #1f2d3d;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: #fff;
+  position: sticky;
+  left: 0;
+  z-index: 1;
+}
+
+.tl-track {
+  flex: 1;
+  position: relative;
+  height: 46px;
+}
+
+.tl-gridline {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: #f0f2f5;
+}
+
+.tl-bar {
+  position: absolute;
+  top: 7px;
+  bottom: 7px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.tl-full {
+  background: #f8c9c9;
+  color: #8c2f2f;
+}
+
+.tl-hourly {
+  background: #E6A23C;
+  color: #fff;
+}
+
+.tl-out {
+  background: repeating-linear-gradient(45deg, #d9dde3 0 5px, #c0c4cc 5px 10px) !important;
+  color: #5c6470 !important;
+}
+
+.tl-bar-label {
+  font-size: 11px;
+  white-space: nowrap;
+  padding: 0 4px;
+}
+
+/* ---------------- 退房弹窗 ---------------- */
+.checkout-highlight {
+  font-weight: 700;
+  color: #e6a23c;
+}
+
+.checkout-overtime {
+  color: #f56c6c;
+  font-weight: 700;
+}
+
+/* ---------------- 移动端 ---------------- */
+@media (max-width: 767px) {
+  body { background: #f7f8fa; }
+  .page { max-width: 100%; padding: 0 0 24px; }
+}
+
+.m-stats {
+  display: flex;
+  gap: 8px;
+  padding: 10px 10px 4px;
+}
+
+.m-stat {
+  flex: 1;
+  background: #fff;
+  border-radius: 10px;
+  padding: 10px 6px;
+  text-align: center;
+  box-shadow: var(--card-shadow);
+}
+
+.m-stat-v { font-size: 18px; font-weight: 700; }
+.m-stat-l { font-size: 11px; color: #667085; margin-top: 2px; }
+
+.m-daybar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px 2px;
+}
+
+.m-day-label { color: #606266; font-size: 13px; }
+
+.m-swipe { padding: 6px 0 4px; }
+
+.m-day {
+  text-align: center;
+  padding: 6px 0;
+  border-radius: 8px;
+  margin: 0 4px;
+}
+
+.m-day.is-active { background: #409eff; color: #fff; }
+.m-day-w { font-size: 11px; opacity: .85; }
+.m-day-d { font-size: 15px; font-weight: 600; margin: 2px 0; }
+.m-day-tag {
+  font-size: 10px;
+  background: #f56c6c;
+  color: #fff;
+  border-radius: 8px;
+  display: inline-block;
+  padding: 0 4px;
+}
+
+.m-rooms {
+  padding: 8px 10px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.m-room-card {
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: var(--card-shadow);
+  padding: 10px 12px;
+}
+
+.m-room-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.m-room-no { font-size: 16px; font-weight: 700; }
+.m-room-name {
+  flex: 1;
+  color: #606266;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.m-room-segs {
+  margin: 8px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.m-seg { font-size: 12px; padding: 4px 8px; border-radius: 6px; }
+.m-seg-full { background: #fde2e2; color: #8c2f2f; }
+.m-seg-hourly { background: #fdf3e0; color: #a05a00; }
+.m-seg-out {
+  background: repeating-linear-gradient(45deg, #d9dde3 0 5px, #c0c4cc 5px 10px) !important;
+  color: #5c6470 !important;
+}
+.m-free { color: #67C23A; font-size: 13px; }
+
+.m-room-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.m-popup { padding-bottom: env(safe-area-inset-bottom); }
+
+.m-popup-title {
+  text-align: center;
+  font-size: 16px;
+  font-weight: 600;
+  padding: 14px 0 4px;
+}
+
+.m-form { padding: 4px 12px 8px; }
+
+.m-form-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid #f5f6f7;
+}
+
+.m-label { width: 76px; color: #323233; font-size: 14px; }
+
+.m-input {
+  flex: 1;
+  border: none;
+  outline: none;
+  font-size: 15px;
+  color: #323233;
+  background: transparent;
+}
+
+.m-popup-actions {
+  display: flex;
+  gap: 10px;
+  padding: 12px 16px 16px;
+}
+
+.m-popup-actions .van-button { flex: 1; }
+
+/* ---------------- 系统设置 ---------------- */
+.settings-panel { margin: 0 auto; }
+
+.panel {
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: var(--card-shadow);
+  padding: 14px 16px;
+  margin-bottom: 12px;
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.panel-title {
+  font-weight: 600;
+  color: #1f2d3d;
+}
+
+.tip {
+  color: #8a94a6;
+  font-size: 12px;
+  margin: 6px 0 0;
+  line-height: 1.6;
+}
+
+.settings-stats {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.s-stat {
+  flex: 1;
+  min-width: 100px;
+  background: #f5f7fa;
+  border-radius: 8px;
+  padding: 12px;
+  text-align: center;
+}
+
+.s-stat-v { font-size: 20px; font-weight: 700; color: #1f2d3d; }
+.s-stat-l { font-size: 12px; color: #667085; margin-top: 4px; }
+.s-stat-neg { color: #f56c6c; }
+
+@media (max-width: 767px) {
+  .settings-panel .el-button { width: 100%; }
+}
+
+/* ---------------- 入住渠道管理 ---------------- */
+.channel-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.channel-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #f5f7fa;
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+
+.channel-swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  border: 1px solid rgba(0, 0, 0, .08);
+  flex-shrink: 0;
+}
+
+.channel-name {
+  flex: 1;
+  color: #303133;
+  font-size: 14px;
+}
+
+.channel-actions {
+  display: inline-flex;
+  gap: 4px;
+}
+
+/* 颜色选择色块 */
+.color-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 6px 0;
+}
+
+.color-swatch {
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 2px solid transparent;
+  transition: transform .12s;
+}
+
+.color-swatch:hover { transform: scale(1.12); }
+.color-swatch.is-active {
+  border-color: #303133;
+  box-shadow: 0 0 0 2px #fff inset;
+}
+
+/* ---------------- 收入查看 ---------------- */
+.revenue-panel { margin: 0 auto; }
+.rev-date-row { display: contents; }
+.refund-note { color: #e67e22; font-size: 12px; margin-left: 4px; }
+.repair-switch { margin: 0 6px; vertical-align: middle; }
+
+/* 收支汇总表（年/月/自定义与单日）：固定列宽并居中显示，避免末尾空白 */
+.rev-table-center {
+  max-width: 930px;
+  margin: 0 auto;
+}
+.rev-table-center .el-table__header th,
+.rev-table-center .el-table__body td {
+  text-align: center;
+}
+
+/* 收支搜索框：PC 固定宽度，手机整行 */
+.rev-date-row .rev-kw { width: 190px; flex-shrink: 0; }
+.rev-query-btn { flex-shrink: 0; }
+
+@media (max-width: 767px) {
+  /* 手机端收支筛选栏：两行三列网格，返回上一级/新增收支右侧同列等宽对齐 */
+  .revenue-panel .filter-bar {
+    display: grid;
+    grid-template-columns: 1fr 1fr auto;
+    gap: 8px;
+    align-items: center;
+  }
+  .revenue-panel .filter-bar > .el-select { width: auto !important; min-width: 0; }
+  .revenue-panel .filter-bar > .rev-kw-row {
+    grid-column: 1 / 4;
+    grid-row: 3;
+    display: contents;
+  }
+  .revenue-panel .filter-bar > .rev-kw-row .rev-kw {
+    grid-column: 1 / 3;
+    grid-row: 3;
+    min-width: 0;
+  }
+  .revenue-panel .filter-bar > .rev-kw-row .rev-query-btn {
+    grid-column: 3;
+    grid-row: 3;
+    height: 32px;
+    width: 100%;
+    margin-left: 0 !important;
+    padding: 6px 8px;
+    font-size: 12px;
+  }
+  .revenue-panel .filter-bar > .rev-back-btn,
+  .revenue-panel .filter-bar > .rev-add-btn {
+    grid-column: 3;
+    width: 100%;
+    padding: 6px 8px;
+    font-size: 12px;
+    height: 32px;
+    margin-left: 0 !important;
+  }
+  .revenue-panel .filter-bar > .rev-back-btn { grid-row: 1; }
+  .revenue-panel .filter-bar > .rev-add-btn { grid-row: 2; }
+  .revenue-panel .filter-bar > .rev-date-row {
+    grid-column: 1 / 3;
+    grid-row: 2;
+    display: flex;
+    gap: 8px;
+    flex-wrap: nowrap;
+    align-items: center;
+    width: auto;
+  }
+  .rev-date-row .el-select,
+  .rev-date-row .el-date-editor { width: auto !important; flex: 1; min-width: 0; }
+  .rev-date-row .el-date-editor--daterange { flex: 1.6; }
+}
+
+/* 手机端收支：账单式日明细 */
+.rev-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.rev-day-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.rev-day-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: #fff;
+  border-radius: 8px;
+  padding: 10px 12px;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, .05);
+}
+.rev-day-left { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.rev-day-summary { font-size: 14px; color: #1f2d3d; font-weight: 600; }
+.rev-day-sub { font-size: 12px; color: #606266; }
+.rev-day-time { font-size: 11px; color: #98a2b3; }
+.rev-day-right { font-size: 16px; font-weight: 700; white-space: nowrap; }
+.rev-day-right.is-pos { color: #e6a23c; }
+.rev-day-right.is-neg { color: #67c23a; }
+
+/* 手机端收支：年/月/自定义卡片（左侧日期，右侧收入/支出/净收入三行） */
+.rev-period-card {
+  display: flex;
+  align-items: center;
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: var(--card-shadow);
+  padding: 12px 14px;
+  gap: 12px;
+}
+.rev-period-left {
+  font-size: 15px;
+  font-weight: 600;
+  color: #1f2d3d;
+  min-width: 84px;
+}
+.rev-period-right {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.rev-period-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  color: #606266;
+}
+.rev-period-line b {
+  font-size: 14px;
+  font-weight: 600;
+}
+.rev-pos { color: #e6a23c; }
+.rev-neg { color: #67c23a; }
+.pos { color: #e6a23c; font-weight: 700; }
+.neg { color: #67c23a; font-weight: 700; }
+
+/* ---------------- 日结收款 ---------------- */
+.pay-day-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 10px 0 4px;
+  font-size: 14px;
+  color: #303133;
+}
+.pay-paid { color: #67c23a; font-weight: 700; }
+.pay-unpaid { color: #f56c6c; font-weight: 700; }
+.pay-days {
+  max-height: 180px;
+  overflow: auto;
+  border: 1px solid #eef0f4;
+  border-radius: 6px;
+}
+.pay-day-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 10px;
+  font-size: 13px;
+  color: #606266;
+  border-bottom: 1px solid #f5f6f7;
+}
+.pay-day-row:last-child { border-bottom: none; }
+.pay-day-row.is-current { background: #ecf5ff; color: #409eff; font-weight: 600; }
+
+/* ---------------- 门店分页 ---------------- */
+.store-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #fff;
+  border-radius: 10px;
+  padding: 10px 14px;
+  box-shadow: var(--card-shadow);
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.store-label { font-weight: 600; color: #1f2d3d; }
+
+.store-tabs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.store-tab {
+  padding: 4px 12px;
+  border-radius: 16px;
+  background: #f5f7fa;
+  color: #606266;
+  cursor: pointer;
+  font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.store-tab.is-active { background: #409eff; color: #fff; }
+.store-tab:not(.is-active) .store-del { color: #c0c4cc; }
+.store-del { font-weight: 700; padding: 0 2px; }
+.store-del:hover { color: #f56c6c; }
+
+/* ---------------- 手机扫码访问 ---------------- */
+.qr-box {
+  display: flex;
+  justify-content: center;
+  padding: 8px 0;
+}
+
+.qr-img {
+  width: 200px;
+  height: 200px;
+  border: 1px solid #e4e7ed;
+  border-radius: 8px;
+}
+
+/* ---------------- 弹窗 ---------------- */
+.price-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.price-suggest {
+  font-size: 18px;
+  font-weight: 700;
+  color: #f56c6c;
+}
+
+.form-hint {
+  color: #8a94a6;
+  font-size: 12px;
+  margin-top: 4px;
+  line-height: 1.6;
+}
+
+/* 价格输入行：保持单行不换行 */
+.price-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+.price-hint {
+  color: #8a94a6;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* ---------------- 导航与订单列表 ---------------- */
+.nav {
+  display: flex;
+  gap: 8px;
+}
+
+.stats-row {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  background: #fff;
+  border-radius: 10px;
+  padding: 12px 14px;
+  box-shadow: var(--card-shadow);
+  margin-bottom: 12px;
+}
+
+.order-table {
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: var(--card-shadow);
+  cursor: pointer;
+}
+
+.order-table .el-table__row:hover td {
+  background: #f5f7fa;
+}
+
+/* ???????? + ??????????????????? */
+.room-filter-main { display: contents; }
+.room-filter-store { display: contents; }
+
+@media (max-width: 767px) {
+  .room-filter-main {
+    display: flex;
+    gap: 8px;
+    flex: 1 1 100%;
+    min-width: 0;
+    align-items: center;
+  }
+  .room-filter-main .el-radio-button__inner {
+    padding: 8px 9px;
+    font-size: 12px;
+  }
+  .room-filter-main .room-filter-store {
+    display: flex;
+    gap: 8px;
+    flex: 1;
+    min-width: 0;
+  }
+  .room-filter-main .room-filter-store .el-select {
+    flex: 1;
+    min-width: 0;
+    width: auto !important;
+  }
+  .room-filter-main .room-filter-store .el-button {
+    flex-shrink: 0;
+    width: 92px;
+    margin-left: 0;
+    padding: 8px 0;
+    font-size: 13px;
+  }
+}
