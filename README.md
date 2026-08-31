@@ -37,39 +37,47 @@ Room-Management-System/
 └── 使用说明.txt               # 老板操作手册（随 exe 交付）
 ```
 
-## 快速开始（开发模式）
+## 获取项目
+
+方式一：命令行克隆
 
 ```bash
+git clone https://github.com/ECHO4502/Room-Management-System.git
 cd Room-Management-System
+```
+
+方式二：GitHub 页面点击 Code → Download ZIP，解压后进入 `Room-Management-System` 目录。
+
+## 运行环境要求
+
+| 组件 | 版本 | 用途 |
+| --- | --- | --- |
+| Python | 3.10+ | 运行与打包后端 |
+| Node.js + npm（或 pnpm） | 18+ | 构建前端（仅打包或前端开发时需要） |
+| Git | 任意 | 拉取代码（下载 ZIP 可跳过） |
+
+## 方式一：命令行本地运行
+
+```bash
+# 1. 安装后端依赖（专用虚拟环境，避免污染系统 Python）
 python -m venv .venv
-.venv\Scripts\activate          # Windows
+.venv\Scripts\activate
 pip install -r requirements.txt
+
+# 2. 启动后端
 python backend/main.py
 ```
 
 浏览器访问 <http://127.0.0.1:8000>，API 文档见 <http://127.0.0.1:8000/docs>。
+首次启动自动创建数据表、默认设置、1 个示例房间和默认入住渠道。
 
-首次启动会自动创建数据表、默认设置、1 个示例房间和默认入住渠道。
-
-## 前端开发（Vite）
-
-前端为 Vue 3 Composition API + Element Plus + Vant 4，运行在 Vite 开发服务器（端口 5173），
-`/api` 请求通过代理转发到后端（端口 8000），因此开发时需要先启动后端。
-屏幕宽度 < 768px 自动切换移动端界面（日期滑动 + 房间卡片 + 底部弹层）。
+前端开发模式（可选，仅在修改前端代码时使用）：
 
 ```bash
-cd Room-Management-System/frontend
+cd frontend
 npm install        # 或 pnpm install
-npm run dev        # 打开 http://127.0.0.1:5173
+npm run dev        # 打开 http://127.0.0.1:5173，/api 自动代理到后端
 ```
-
-构建生产版本：
-
-```bash
-npm run build      # 产物输出到 frontend/dist，后端启动时自动优先托管 dist
-```
-
-后端静态托管优先级：`frontend/dist`（构建产物）> `frontend/`（源码直连场景）。
 
 可通过环境变量调整启动参数：
 
@@ -79,15 +87,28 @@ npm run build      # 产物输出到 frontend/dist，后端启动时自动优先
 | `HOTEL_PORT` | `8000` | 监听端口（被占用时自动顺延） |
 | `HOTEL_DB_PATH` | `data/hotel.db` | 数据库文件路径 |
 
-## 打包为 exe
+## 方式二：打包为 exe 部署
 
 ```bash
-python build.py
+# 1. 安装后端依赖（专用虚拟环境）
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+
+# 2. 安装前端依赖并构建生产版本（产物输出到 frontend/dist）
+cd frontend
+npm install        # 或 pnpm install
+npm run build
+cd ..
+
+# 3. 打包 exe（务必使用虚拟环境的 Python，系统 Python 未安装 PyInstaller）
+.venv\Scripts\python.exe build.py
 ```
 
-打包完成后 exe 位于 `dist\客房管理系统.exe`。运行 exe 后自动打开浏览器访问
-`http://127.0.0.1:8000`；数据库自动生成在 exe 同级目录 `data/hotel.db`（升级不丢数据）。
-前端离线依赖缺失时，`build.py` 会自动下载到 `frontend/vendor/`。
+- 交付物：`dist\客房管理系统.exe`（单文件）；将项目根目录的 `使用说明.txt` 复制到 exe 旁边一并交付。
+- 数据库不打包：首次运行自动在 exe 同级创建 `data/hotel.db`，升级程序不丢数据。
+- 运行 exe 自动打开本机浏览器（http://127.0.0.1:8000）、尝试放行防火墙端口（无管理员权限时静默跳过）、写入 `ip.txt` 并驻留系统托盘。
+- `build.py` 会自动确认前端构建产物（`frontend/dist`）；前端离线依赖缺失时会自动下载到 `frontend/vendor/`。
 
 ## 业务规则
 
@@ -102,7 +123,7 @@ python build.py
 - 收支明细：收入与支出（可新增、删除、编辑）、退费、订单关联自动备注；按年 / 月 / 日 / 全部（全部可自选起止日期）查询，支持翻页与返回上一级。
 - 入住渠道：设置页可自定义渠道名称与颜色（10+ 种颜色可选），网格按渠道颜色区分。
 - 房间管理：启用 / 停用、维修开关，状态与启用状态筛选。
-- 数据与权限：无登录认证，适合单机 / 局域网私有部署；房间删除为软删除（停用）；订单删除为物理删除，不可恢复。
+- 数据与权限：无登录认证，适合单机 / 局域网私有部署；房间删除为软删除（停用），订单删除为物理删除，不可恢复。
 
 ## 数据备份
 
@@ -116,19 +137,9 @@ python build.py
 - 设置页「手机扫码访问」展示二维码（`GET /api/qrcode` 返回 PNG），手机连同一 Wi-Fi 扫码即可打开系统。
 - 打包后的 exe 双击运行会自动打开本机浏览器（PC 走 http://127.0.0.1:8000），并驻留系统托盘。
 
-## 打包与交付
+## 旧库迁移
 
-```bash
-.venv\Scripts\python.exe build.py
-```
-
-- `build.py` 会先确认前端构建产物（`frontend/dist`），再执行 PyInstaller 打包为单文件 exe。
-- 交付物在 `dist/`：`客房管理系统.exe`（单文件）+ `使用说明.txt`。
-- 数据库不打包：首次运行自动在 exe 同级创建 `data/hotel.db`；启动时自动备份、写 `ip.txt`、
-  尝试放行防火墙端口（无管理员权限时静默跳过），并自动打开本机浏览器。
-- 打包不覆盖现有文件：旧的 `dist/`、`frontend/dist` 等保留，方便调试回溯。
-
-旧库迁移（「全日房/钟点房」结构 → 普通房间结构）：
+旧版「全日房/钟点房」结构迁移到普通房间结构：
 
 ```bash
 python migrate_room_type.py
