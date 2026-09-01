@@ -318,6 +318,7 @@ body {
   background: #fff;
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
   padding: 6px 10px;
   border-bottom: 1px solid #eef0f4;
@@ -331,7 +332,7 @@ body {
 }
 
 .room-name {
-  flex: 1;
+  flex: none;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -678,6 +679,12 @@ body {
 }
 
 .m-room-no { font-size: 16px; font-weight: 700; }
+.m-room-status { flex-shrink: 0; padding: 2px 8px; border-radius: 8px; font-size: 12px; color: #fff; }
+.m-room-status.st-free { background: #67C23A; }
+.m-room-status.st-repair { background: #C0C4CC; }
+.m-room-status.st-in { background: #F56C6C; }
+.m-room-status.st-booked { background: #E6A23C; }
+.m-room-status.st-off { background: #909399; }
 .m-room-name {
   flex: 1;
   color: #606266;
@@ -1126,6 +1133,7 @@ body {
   gap: 12px;
   margin-bottom: 14px;
   flex-wrap: wrap;
+  align-items: flex-start;
 }
 
 .filter-bar {
@@ -1186,3 +1194,47 @@ body {
     font-size: 13px;
   }
 }
+
+/* ????????? / ???? / ???? */
+.m-room-toolbar { display: flex; justify-content: flex-end; padding: 8px 10px 0; background: #fff; }
+.s-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.s-label { color: #606266; font-size: 14px; }
+.backup-list { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.backup-item { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.backup-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #303133; }
+.backup-time { color: #909399; font-size: 12px; }
+.room-store-mark { color: #909399; font-size: 12px; }
+.detail-auto { flex: 1; display: flex; align-items: center; gap: 12px; min-width: 0; }
+.m-detail-auto { display: flex; align-items: center; gap: 10px; padding: 10px 16px; flex-wrap: wrap; }
+.s-label.link { color: #409eff; }
+.s-label.link.danger { color: #f56c6c; }
+.auto-log-dialog .el-dialog__body { max-height: 520px; overflow-y: auto; }
+.m-room-kw-row { flex: 1 1 100%; display: flex; gap: 8px; min-width: 0; }
+.alert-card { position: relative; flex: none; width: 320px; align-self: flex-start; background: #fff7e6; border: 1px solid #f5dab1; border-radius: 10px; padding: 10px 14px; }
+.alert-head { display: flex; align-items: center; justify-content: space-between; cursor: pointer; }
+.alert-toggle { font-size: 12px; color: #b46a00; }
+.alert-body { position: absolute; top: 100%; right: 0; z-index: 60; width: 380px; max-height: 260px; overflow-y: auto; background: #fff; border: 1px solid #f5dab1; border-radius: 8px; box-shadow: 0 4px 14px rgba(0,0,0,.15); margin-top: 6px; padding: 8px 10px; }
+.alert-card .panel-title { font-weight: 600; margin-bottom: 6px; }
+.alert-item { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #b46a00; cursor: pointer; padding: 3px 0; }
+.alert-item:hover { text-decoration: underline; }
+.alert-dot { width: 7px; height: 7px; border-radius: 50%; background: #f56c6c; flex-shrink: 0; }
+.m-order-status { font-size: 12px; padding: 1px 7px; border-radius: 8px; }
+.m-order-status.st-booked { color: #a05a00; background: #fdf3e0; }
+.m-order-status.st-in { color: #8c2f2f; background: #fde2e2; }
+.m-order-status.st-out { color: #606266; background: #eef0f4; }
+.m-order-status.st-cancel { color: #909399; background: #f0f2f5; }
+
+@media (max-width: 767px) {
+  .revenue-panel .filter-bar,
+  .room-filter-bar,
+  .settings-panel > .panel:first-child {
+    border-radius: 0;
+  }
+}
+.m-meta-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.m-order-remark { color: #909399; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 55%; }
+.detail-pay { border-top: 1px solid #eee; padding: 12px 4px 4px; }
+.pay-list { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; }
+.pay-item { display: flex; gap: 16px; font-size: 13px; color: #303133; }
+.pay-add { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+.m-detail-pay { padding: 10px 16px; }

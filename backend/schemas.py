@@ -56,8 +56,8 @@ class StoreResponse(BaseModel):
 
 class RoomCreate(BaseModel):
     room_number: str = Field(..., min_length=1, max_length=20, description="房间号")
-    room_name: str = Field(..., min_length=1, max_length=50, description="房间名称")
-    room_category: RoomCategory = Field(RoomCategory.STANDARD, description="房间品类：标准间/大床房/套房/双床房")
+    room_name: str = Field("", max_length=50, description="房间名称（已弃用，可留空）")
+    room_category: str = Field("标准间", min_length=1, max_length=20, description="房型（可在系统设置中自定义）")
     base_price: float = Field(..., ge=0, description="全日租价格（元/晚）")
     hourly_price: float = Field(0, ge=0, description="钟点房价格（元/小时），0 表示按全日价/24 自动折算")
     status: RoomStatus = Field(RoomStatus.AVAILABLE, description="房间状态")
@@ -66,8 +66,8 @@ class RoomCreate(BaseModel):
 
 class RoomUpdate(BaseModel):
     room_number: Optional[str] = Field(None, min_length=1, max_length=20)
-    room_name: Optional[str] = Field(None, min_length=1, max_length=50)
-    room_category: Optional[RoomCategory] = None
+    room_name: Optional[str] = Field(None, max_length=50)
+    room_category: Optional[str] = Field(None, min_length=1, max_length=20)
     base_price: Optional[float] = Field(None, ge=0)
     hourly_price: Optional[float] = Field(None, ge=0)
     status: Optional[RoomStatus] = None
@@ -78,8 +78,8 @@ class RoomUpdate(BaseModel):
 class RoomResponse(BaseModel):
     id: int
     room_number: str
-    room_name: str
-    room_category: RoomCategory
+    room_name: str = ""
+    room_category: str
     base_price: float
     hourly_price: float = 0
     status: RoomStatus
@@ -154,6 +154,8 @@ class OrderUpdate(BaseModel):
     rent_hours: Optional[float] = Field(None, gt=0)
     total_price: Optional[float] = Field(None, ge=0)
     status: Optional[OrderStatus] = None
+    automation_enabled: Optional[int] = Field(None, ge=0, le=1)
+    auto_action: Optional[str] = Field(None, pattern="^(checkout|pay)$")
 
 
 class OrderResponse(BaseModel):
@@ -177,10 +179,13 @@ class OrderResponse(BaseModel):
     total_price: float
     extra_charge: float = 0
     status: OrderStatus
+    automation_enabled: int = 0
+    auto_action: str = "checkout"
     created_at: int
     updated_at: int
     room_number: Optional[str] = None
     room_name: Optional[str] = None
+    room_category: Optional[str] = None
     base_price: Optional[float] = None
 
 
@@ -289,7 +294,7 @@ class RoomStatusDay(BaseModel):
     room_id: int
     room_number: str
     room_name: str
-    room_category: RoomCategory
+    room_category: str
     base_price: float
     statuses: dict[str, str]
     segments: dict[str, list[SegmentOut]]
@@ -368,3 +373,87 @@ class RevenueOut(BaseModel):
     income_count: int
     gran: str
     items: list[RevenueItemOut]
+
+
+
+# ---------------- 房间模板 / 批量操作 / 自定义房型 / 自动化 ----------------
+
+class RoomTemplateCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=30, description="模板名称")
+    room_category: str = Field("标准间", min_length=1, max_length=20)
+    base_price: float = Field(..., ge=0)
+    hourly_price: float = Field(0, ge=0)
+
+
+class RoomTemplateResponse(BaseModel):
+    id: int
+    name: str
+    room_category: str
+    base_price: float
+    hourly_price: float = 0
+    created_at: int
+
+
+class RoomBatchCreate(BaseModel):
+    store_id: int = Field(1, ge=1)
+    room_category: str = Field("标准间", min_length=1, max_length=20)
+    base_price: float = Field(..., ge=0)
+    hourly_price: float = Field(0, ge=0)
+    floor_start: int = Field(1, ge=1, le=99)
+    floor_end: int = Field(1, ge=1, le=99)
+    rooms_per_floor: int = Field(1, ge=1, le=99)
+
+    @model_validator(mode="after")
+    def _check(self):
+        if self.floor_end < self.floor_start:
+            raise ValueError("楼层止不能小于楼层起")
+        return self
+
+
+class RoomBatchEdit(BaseModel):
+    store_id: Optional[int] = Field(None, ge=1)
+    room_category: Optional[str] = Field(None, min_length=1, max_length=20)
+    floor: Optional[int] = Field(None, ge=1, le=99, description="按房号楼层前缀匹配（如 1 匹配 1xx）")
+    set_base_price: Optional[float] = Field(None, ge=0, description="直接设为该全日价")
+    delta_base_price: float = Field(0, description="全日价增减（可为负）")
+    set_hourly_price: Optional[float] = Field(None, ge=0, description="直接设为该钟点价")
+    delta_hourly_price: float = Field(0, description="钟点价增减（可为负）")
+
+
+class RoomCategoryCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=20)
+
+
+class RoomCategoryResponse(BaseModel):
+    id: int
+    name: str
+    sort_order: int = 0
+
+
+class AutomationLogResponse(BaseModel):
+    id: int
+    order_id: int
+    action: str
+    note: str = ""
+    before_data: str = ""
+    created_at: int
+    rolled_back: int = 0
+    order_no: Optional[str] = None
+    room_number: Optional[str] = None
+    guest_name: Optional[str] = None
+    order_date: Optional[int] = None
+
+
+class RestoreBackupRequest(BaseModel):
+    backup_path: str = Field(..., min_length=1)
+
+
+class AutomationRollbackRequest(BaseModel):
+    log_id: Optional[int] = None
+    order_id: Optional[int] = None
+    confirm: bool = Field(False)
+
+
+class OrderAutomationRequest(BaseModel):
+    enabled: bool = True
+    action: str = Field("checkout", pattern="^(checkout|extend)$")

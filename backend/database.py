@@ -9,12 +9,15 @@ from datetime import datetime
 from pathlib import Path
 
 from models import (
+    AUTOMATION_LOGS_TABLE_DDL,
     CHANNELS_TABLE_DDL,
     EXPENSES_TABLE_DDL,
     INDEXES_DDL,
     ORDER_PAYMENTS_TABLE_DDL,
     ORDERS_TABLE_DDL,
     ORDER_SEQ_TABLE_DDL,
+    ROOM_CATEGORIES_TABLE_DDL,
+    ROOM_TEMPLATES_TABLE_DDL,
     ROOMS_TABLE_DDL,
     SETTINGS_TABLE_DDL,
     STORES_TABLE_DDL,
@@ -27,7 +30,10 @@ DEFAULT_SETTINGS = [
     ("checkout_time", "12:00", "全日租默认退房时间（HH:MM）"),
     ("min_rent_hours", "1", "钟点房最短计费时长（小时）"),
     ("hourly_increment", "1", "钟点房计费递增单位（小时）"),
-]
+    ("auto_checkin", "0", "全局自动维护：到入住时间自动办理入住（0/1）"),
+    ("auto_master", "0", "自动维护总开关（0/1），关闭时全局自动维护不执行"),
+    ("auto_checkout", "0", "全局自动维护：到退房时间自动办理退房（0/1）"),
+    ("auto_extend", "0", "全局自动维护：到期自动续住（0/1）"),]
 
 # 首次启动自动创建的示例房间：(room_number, room_name, room_category, base_price)
 # 所有房间都是普通房间，base_price 为基础价（全日租按晚、钟点房按小时计费）
@@ -78,6 +84,11 @@ def init_db(db_path=None) -> Path:
         conn.executescript(SETTINGS_TABLE_DDL)
         conn.executescript(ORDER_SEQ_TABLE_DDL)
         conn.executescript(EXPENSES_TABLE_DDL)
+        conn.executescript(ROOM_TEMPLATES_TABLE_DDL)
+        conn.executescript(ROOM_CATEGORIES_TABLE_DDL)
+        conn.executescript(AUTOMATION_LOGS_TABLE_DDL)
+        _ensure_room_categories(conn)  # 默认房型
+        _migrate_order_automation(conn)  # 订单自动化列
         _migrate_expenses(conn)        # 手工收支表补充字段
         _ensure_channels(conn)         # 渠道表首次创建时写入默认渠道
         _migrate_orders(conn)          # 补充 order_no/remark 列并回填
@@ -450,3 +461,22 @@ def _migrate_order_adjust_amount(conn: sqlite3.Connection) -> None:
     if "adjust_amount" in columns:
         return
     conn.execute("ALTER TABLE orders ADD COLUMN adjust_amount REAL NOT NULL DEFAULT 0")
+
+def _ensure_room_categories(conn: sqlite3.Connection) -> None:
+    """默认房型：标准间 / 大床房 / 套房 / 双床房；已存在则不重复写入。"""
+    conn.executescript(ROOM_CATEGORIES_TABLE_DDL)
+    cnt = conn.execute("SELECT COUNT(*) AS c FROM room_categories").fetchone()["c"]
+    if cnt == 0:
+        conn.executemany(
+            "INSERT INTO room_categories (name, sort_order) VALUES (?, ?)",
+            [("标准间", 1), ("大床房", 2), ("套房", 3), ("双床房", 4)],
+        )
+
+
+def _migrate_order_automation(conn: sqlite3.Connection) -> None:
+    """orders 表补充单订单自动化维护字段。"""
+    columns = [r["name"] for r in conn.execute("PRAGMA table_info(orders)").fetchall()]
+    if "automation_enabled" not in columns:
+        conn.execute("ALTER TABLE orders ADD COLUMN automation_enabled INTEGER NOT NULL DEFAULT 0")
+    if "auto_action" not in columns:
+        conn.execute("ALTER TABLE orders ADD COLUMN auto_action TEXT NOT NULL DEFAULT 'checkout'")

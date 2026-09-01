@@ -10,6 +10,7 @@ import socket
 import sys
 import threading
 import time
+import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -38,7 +39,7 @@ import tray
 import utils
 from utils import AppError
 
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.2"
 
 # 日志系统：控制台 + logs/app.log（10MB 滚动）
 app_logger.setup()
@@ -75,14 +76,12 @@ app = FastAPI(
 
 
 def _auto_backup_on_startup() -> None:
-    """启动时自动备份：写入数据库同级 backups/ 目录，按日期命名，保留最近 7 份。"""
+    """启动时自动备份：写入数据库同级 backups/ 目录，文件名含具体时间与原因，
+    仅启动自动备份参与滚动清理，高危操作保留的备份不会被覆盖。"""
     try:
         backup_dir = database.get_db_path().parent / "backups"
-        utils.backup_database(
-            target_dir=backup_dir,
-            filename=f"auto_{datetime.now().strftime('%Y%m%d')}.zip",
-        )
-        utils.cleanup_old_backups(backup_dir, keep=7, pattern="auto_*.zip")
+        utils.backup_database(target_dir=backup_dir, reason="启动自动备份")
+        utils.cleanup_old_backups(backup_dir, keep=7, pattern="启动自动备份_*.zip")
     except Exception as exc:  # noqa: BLE001
         print(f"[备份] 启动自动备份失败：{exc}")
 
@@ -150,6 +149,77 @@ def api_backup_download():
         media_type="application/zip",
         filename=zip_path.name,
     )
+@app.get("/api/alerts", tags=["系统"])
+def api_alerts():
+    """超时未处理提醒（应入住/应退房/长租未收款）。"""
+    return _with_conn(crud.get_alerts)
+
+
+@app.post("/api/backup/manual", tags=["系统"])
+def api_backup_manual(reason: str = Query("手动备份")):
+    """按原因手动备份（自动维护开启前、读取备份前等调用），返回备份文件信息。"""
+    zip_path = utils.backup_database(
+        target_dir=database.get_db_path().parent / "backups", reason=reason
+    )
+    return {"name": zip_path.name, "path": str(zip_path)}
+
+
+@app.get("/api/backups", tags=["系统"])
+def api_list_backups():
+    """列出备份目录中的备份文件（按时间倒序），并读取压缩包内备份说明。"""
+    backup_dir = database.get_db_path().parent / "backups"
+    if not backup_dir.is_dir():
+        return []
+    names = [n for n in os.listdir(str(backup_dir)) if n.lower().endswith(".zip")]
+    paths = [(backup_dir / n) for n in names]
+    paths.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    out = []
+    for p in paths[:50]:
+        reason, time_text = "", ""
+        try:
+            with zipfile.ZipFile(str(p)) as zf:
+                info = zf.read("backup_info.txt").decode("utf-8", errors="replace")
+                for line in info.splitlines():
+                    if line.startswith("备份原因："):
+                        reason = line.split("：", 1)[1].strip()
+                    elif line.startswith("生成时间："):
+                        time_text = line.split("：", 1)[1].strip()
+        except Exception:
+            pass
+        if not reason:
+            name = p.name
+            reason = name.split("_")[0] if "_" in name else name.replace(".zip", "")
+        if not time_text:
+            time_text = datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+        out.append({"name": p.name, "path": str(p), "size": p.stat().st_size,
+                    "mtime": int(p.stat().st_mtime), "reason": reason, "time_text": time_text})
+    return out
+
+
+@app.post("/api/backup/restore", tags=["系统"])
+def api_restore_backup(data: schemas.RestoreBackupRequest):
+    """读取备份：恢复前自动备份当前数据（读取备份前保留）。"""
+    utils.backup_database(
+        target_dir=database.get_db_path().parent / "backups", reason="读取备份前保留"
+    )
+    utils.restore_database(data.backup_path)
+    database.init_db()
+    return {"ok": True, "message": "备份已恢复，请刷新页面查看"}
+
+@app.post("/api/backup/delete", tags=["系统"])
+def api_delete_backup(data: schemas.RestoreBackupRequest):
+    """删除备份目录中的指定备份文件（仅允许删除备份目录内的 zip，防路径穿越）。"""
+    backup_dir = (database.get_db_path().parent / "backups").resolve()
+    p = Path(data.backup_path).resolve()
+    if p.parent != backup_dir or p.suffix.lower() != ".zip":
+        raise HTTPException(status_code=400, detail="非法的备份文件路径")
+    if not p.is_file():
+        raise HTTPException(status_code=404, detail="备份文件不存在")
+    try:
+        p.unlink()
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"删除失败：{exc}") from exc
+    return {"ok": True, "message": "备份已删除"}
 
 @app.get("/api/statistics/today", response_model=schemas.TodayStatisticsOut, tags=["统计"])
 def api_statistics_today(date_ts: Optional[int] = None):
@@ -276,6 +346,46 @@ def api_delete_room(room_id: int, confirm: bool = Query(False), hard: bool = Que
     _with_conn(lambda c: crud.delete_room(c, room_id, confirm, hard))
 
 
+# ---------------- 房间模板 / 自定义房型 / 批量操作 ----------------
+
+@app.get("/api/room-templates", response_model=list[schemas.RoomTemplateResponse], tags=["房间"])
+def api_list_room_templates():
+    return _with_conn(crud.list_room_templates)
+
+
+@app.post("/api/room-templates", response_model=schemas.RoomTemplateResponse, status_code=201, tags=["房间"])
+def api_create_room_template(data: schemas.RoomTemplateCreate):
+    return _with_conn(lambda c: crud.create_room_template(c, data))
+
+
+@app.delete("/api/room-templates/{template_id}", status_code=204, tags=["房间"])
+def api_delete_room_template(template_id: int, confirm: bool = Query(False)):
+    _with_conn(lambda c: crud.delete_room_template(c, template_id, confirm))
+
+
+@app.get("/api/room-categories", response_model=list[schemas.RoomCategoryResponse], tags=["房间"])
+def api_list_room_categories():
+    return _with_conn(crud.list_room_categories)
+
+
+@app.post("/api/room-categories", response_model=schemas.RoomCategoryResponse, status_code=201, tags=["房间"])
+def api_create_room_category(data: schemas.RoomCategoryCreate):
+    return _with_conn(lambda c: crud.create_room_category(c, data))
+
+
+@app.delete("/api/room-categories/{category_id}", status_code=204, tags=["房间"])
+def api_delete_room_category(category_id: int, confirm: bool = Query(False)):
+    _with_conn(lambda c: crud.delete_room_category(c, category_id, confirm))
+
+
+@app.post("/api/rooms/batch", tags=["房间"])
+def api_batch_create_rooms(data: schemas.RoomBatchCreate):
+    return _with_conn(lambda c: crud.batch_create_rooms(c, data))
+
+
+@app.post("/api/rooms/batch-edit", tags=["房间"])
+def api_batch_edit_rooms(data: schemas.RoomBatchEdit):
+    return _with_conn(lambda c: crud.batch_edit_rooms(c, data))
 # ---------------- 订单 ----------------
 
 @app.get("/api/orders", response_model=list[schemas.OrderResponse], tags=["订单"])
@@ -372,6 +482,22 @@ def api_upsert_order_payment(order_id: int, data: schemas.PaymentCreate):
     return _with_conn(lambda c: crud.upsert_order_payment(c, order_id, data))
 
 
+# ---------------- 自动维护 ----------------
+
+@app.get("/api/automation/logs", response_model=list[schemas.AutomationLogResponse], tags=["自动维护"])
+def api_list_automation_logs(rolled_back: Optional[int] = None, order_id: Optional[int] = None):
+    return _with_conn(lambda c: crud.list_automation_logs(c, rolled_back, order_id))
+
+
+@app.post("/api/automation/rollback", tags=["自动维护"])
+def api_automation_rollback(data: schemas.AutomationRollbackRequest):
+    """回滚自动化操作：log_id 单笔、order_id 单订单、都为空则全局。"""
+    return _with_conn(lambda c: crud.rollback_automation(c, data.log_id, data.order_id, data.confirm))
+
+
+@app.post("/api/orders/{order_id}/automation", response_model=schemas.OrderResponse, tags=["自动维护"])
+def api_set_order_automation(order_id: int, data: schemas.OrderAutomationRequest):
+    return _with_conn(lambda c: crud.set_order_automation(c, order_id, data.enabled, data.action))
 # ---------------- 设置 ----------------
 
 @app.get("/api/settings", response_model=list[schemas.SettingsItem], tags=["设置"])
@@ -420,21 +546,16 @@ if __name__ == "__main__":
             except OSError:
                 return True
 
-    # 端口占用检查：占用则打印错误并退出，避免重复运行
+    # 端口占用检查：重复启动时直接打开本机控制面板，不再弹出冲突提示
     if _port_in_use(port):
-        msg = (
-            f"端口 {port} 已被占用，可能系统已在运行。\n"
-            "请先通过托盘图标退出，或关闭占用该端口的程序后重试。"
-        )
-        if getattr(sys, "frozen", False):
-            try:
-                import win32api
+        try:
+            import webbrowser
 
-                win32api.MessageBox(0, msg, "客房管理系统", 0x10)
-            except Exception:
-                pass
-        print(f"[启动失败] {msg}", flush=True)
-        raise SystemExit(1)
+            webbrowser.open(f"http://127.0.0.1:{port}")
+        except Exception:
+            pass
+        print(f"系统已在运行，已打开控制面板（http://127.0.0.1:{port}）。", flush=True)
+        raise SystemExit(0)
 
     def start_server() -> None:
         """在子线程中运行 uvicorn 服务。"""
@@ -478,6 +599,20 @@ if __name__ == "__main__":
 
         threading.Timer(1.5, lambda: webbrowser.open(f"http://127.0.0.1:{ACTIVE_PORT}")).start()
 
+    # 自动维护守护线程（每 30 秒检查一次：自动入住/退房/续住/单订单自动操作）
+    def automation_loop() -> None:
+        while True:
+            try:
+                time.sleep(30)
+                conn = database.get_connection()
+                try:
+                    crud.run_auto_maintenance(conn)
+                finally:
+                    conn.close()
+            except Exception:
+                pass
+
+    threading.Thread(target=automation_loop, daemon=True).start()
     # 全局异常捕获：托盘异常不影响服务运行；服务异常托盘仍显示
     try:
         tray.run(port=port, server_ok=ready)

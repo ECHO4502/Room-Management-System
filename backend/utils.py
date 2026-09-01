@@ -183,7 +183,8 @@ def _pick_backup_dir() -> Path | None:
 
 def backup_database(db_path: str | Path | None = None,
                     target_dir: str | Path | None = None,
-                    filename: str | None = None) -> Path:
+                    filename: str | None = None,
+                    reason: str = "一键备份") -> Path:
     """安全备份 SQLite 数据库为 ZIP 文件，返回备份文件完整路径。
 
     备份过程：
@@ -206,7 +207,7 @@ def backup_database(db_path: str | Path | None = None,
     target_dir.mkdir(parents=True, exist_ok=True)
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    name = filename or f"backup_{stamp}.zip"
+    name = filename or f"{reason}_{stamp}.zip"
     zip_path = target_dir / name
     tmp_db = target_dir / f"_tmp_{stamp}.db"
 
@@ -232,6 +233,7 @@ def backup_database(db_path: str | Path | None = None,
                 "backup_info.txt",
                 "客房管理系统数据备份\n"
                 f"生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"备份原因：{reason}\n"
                 f"来源数据库：{db_path}\n"
                 f"备份文件：{zip_path}\n",
             )
@@ -293,3 +295,44 @@ def build_qrcode_png(data: str) -> bytes:
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
+
+def restore_database(zip_path: str | Path, db_path: str | Path | None = None) -> Path:
+    """从备份 ZIP 恢复数据库：把压缩包内的 hotel.db 替换当前数据库文件。
+
+    调用方需先备份当前数据（读取备份前保留）；本函数只做替换。
+    """
+    zip_path = Path(zip_path)
+    if not zip_path.exists():
+        raise AppError("备份文件不存在", 404)
+    if db_path is None:
+        from database import get_db_path  # 延迟导入避免循环依赖
+        db_path = get_db_path()
+    db_path = Path(db_path)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    tmp_db = db_path.parent / f"_restore_tmp_{stamp}.db"
+    try:
+        with zipfile.ZipFile(str(zip_path)) as zf:
+            names = zf.namelist()
+            member = "hotel.db" if "hotel.db" in names else next(
+                (n for n in names if n.endswith(".db")), None
+            )
+            if not member:
+                raise AppError("备份文件中未找到数据库（hotel.db）")
+            with zf.open(member) as src, open(str(tmp_db), "wb") as dst:
+                dst.write(src.read())
+        for attempt in range(5):
+            try:
+                os.replace(str(tmp_db), str(db_path))
+                break
+            except OSError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.3)
+    finally:
+        try:
+            tmp_db.unlink()
+        except OSError:
+            pass
+    return db_path

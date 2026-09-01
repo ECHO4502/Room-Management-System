@@ -127,3 +127,39 @@ CREATE INDEX IF NOT EXISTS idx_orders_room_time_status
     ON orders (room_id, start_timestamp, end_timestamp, status);
 -- 订单号唯一索引在 database._migrate_orders 中回填后创建（旧库需先补列）
 """
+
+# 房间模板（保存房型 + 价格，供新建房间快速套用与批量新建）
+ROOM_TEMPLATES_TABLE_DDL = """
+CREATE TABLE IF NOT EXISTS room_templates (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    name          TEXT    NOT NULL UNIQUE,
+    room_category TEXT    NOT NULL,
+    base_price    REAL    NOT NULL CHECK (base_price >= 0),
+    hourly_price  REAL    NOT NULL DEFAULT 0 CHECK (hourly_price >= 0),
+    created_at    INTEGER NOT NULL
+);
+"""
+
+# 自定义房型（默认四种，可在系统设置中增删）
+ROOM_CATEGORIES_TABLE_DDL = """
+CREATE TABLE IF NOT EXISTS room_categories (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT    NOT NULL UNIQUE,
+    sort_order INTEGER NOT NULL DEFAULT 0
+);
+"""
+
+# 自动维护操作日志（用于全局/单笔回滚）
+AUTOMATION_LOGS_TABLE_DDL = """
+CREATE TABLE IF NOT EXISTS automation_logs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id    INTEGER NOT NULL,
+    action      TEXT    NOT NULL,
+    note        TEXT    NOT NULL DEFAULT '',
+    before_data TEXT    NOT NULL DEFAULT '',
+    created_at  INTEGER NOT NULL,
+    rolled_back INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_automation_logs_order ON automation_logs(order_id);
+CREATE INDEX IF NOT EXISTS idx_automation_logs_rolled ON automation_logs(rolled_back);
+"""
