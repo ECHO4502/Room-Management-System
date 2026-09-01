@@ -665,7 +665,8 @@ def extend_order(conn: sqlite3.Connection, order_id: int, count: float,
             rent_hours = (order.get("rent_hours") or 0) + extra_hours
             start = order["start_timestamp"]
             end = start + int(round(rent_hours * 3600))
-            rate = room.get("hourly_price") or (room["base_price"] / 24.0)
+            # 与创建订单一致：按日租价/24 折算小时单价
+            rate = max(0.0, room["base_price"]) / 24.0
             extra_price = round(rate * extra_hours, 2)
         else:
             extra_days = int(math.ceil(count))
@@ -689,6 +690,9 @@ def extend_order(conn: sqlite3.Connection, order_id: int, count: float,
             raise AppError("续住时间段与已有订单冲突，无法续住", status_code=409)
 
         total = round((order["total_price"] or 0) + extra_price, 2)
+        # 钟点房：单日收款上限不超过日租价
+        if order["order_type"] == "hourly":
+            total = round(min(total, max(0.0, room["base_price"])), 2)
         if order["order_type"] == "hourly":
             conn.execute(
                 "UPDATE orders SET end_timestamp = ?, rent_hours = ?, total_price = ?, updated_at = ?"
@@ -919,6 +923,12 @@ def _day_segments(conn: sqlite3.Connection, room: dict, day_ts: int) -> list[dic
             order_ids,
         ).fetchall()
         paid_set = {(r["order_id"], r["pay_date"]) for r in pay_rows}
+        auto_rows = conn.execute(
+            f"SELECT DISTINCT order_id FROM automation_logs"
+            f" WHERE order_id IN ({placeholders}) AND rolled_back = 0",
+            order_ids,
+        ).fetchall()
+        auto_ids = {r["order_id"] for r in auto_rows}
     segments: list[dict] = []
     for row in rows:
         o_start, o_end = normalize_order_range(
@@ -963,6 +973,7 @@ def _day_segments(conn: sqlite3.Connection, room: dict, day_ts: int) -> list[dic
             "guest_name": row["guest_name"],
             "guest_source": row["guest_source"],
             "total_price": row["total_price"],
+            "auto": row["id"] in auto_ids,
         })
     return segments
 
@@ -1541,6 +1552,20 @@ def _auto_conflict(conn: sqlite3.Connection, room_id: int, start: int,
     return bool(check_room_conflict(conn, room_id, start, end, exclude_order_id))
 
 
+def _update_auto_extend_remark(conn: sqlite3.Connection, order_id: int) -> None:
+    """自动续住备注：累计次数（【自动续住】×N）而非重复追加多条。"""
+    import re
+    row = conn.execute("SELECT remark FROM orders WHERE id = ?", (order_id,)).fetchone()
+    remark = row["remark"] if row else ""
+    remark = re.sub(r'；?【自动续住】(×\d+)?', "", remark or "").strip("；")
+    cnt = conn.execute(
+        "SELECT COUNT(*) AS c FROM automation_logs WHERE order_id = ? AND action = 'auto_extend' AND rolled_back = 0",
+        (order_id,),
+    ).fetchone()["c"]
+    tag = "【自动续住】" if cnt <= 1 else "【自动续住】×" + str(cnt)
+    new_remark = (remark + "；" + tag) if remark else tag
+    conn.execute("UPDATE orders SET remark = ? WHERE id = ?", (new_remark, order_id))
+
 def run_auto_maintenance(conn: sqlite3.Connection) -> list[dict]:
     """执行一次自动维护，返回动作摘要：
     - 全局：自动入住 / 自动退房（冲突检查）/ 自动续住（冲突检查）
@@ -1647,10 +1672,7 @@ def run_auto_maintenance(conn: sqlite3.Connection) -> list[dict]:
                     " VALUES (?, 'auto_extend', '自动续住', ?, ?, 0)",
                     (oid, before, now),
                 )
-                conn.execute(
-                    "UPDATE orders SET remark = CASE WHEN remark = '' THEN '【自动续住】' ELSE remark || '；【自动续住】' END WHERE id = ?",
-                    (oid,),
-                )
+                _update_auto_extend_remark(conn, oid)
                 conn.commit()
                 actions.append({"action": "auto_extend", "order_id": oid, "note": "自动续住"})
             except Exception:
@@ -1658,6 +1680,46 @@ def run_auto_maintenance(conn: sqlite3.Connection) -> list[dict]:
                     conn.rollback()
                 except Exception:
                     pass
+
+    # 单订单自动入住（到点自动办理入住）
+    checkin_rows = conn.execute(
+        "SELECT id, room_id, order_type, settle_mode, start_timestamp, status, auto_action"
+        " FROM orders WHERE automation_enabled = 1 AND auto_action = 'checkin' AND status = '已预订'"
+        " AND start_timestamp <= ? AND order_type != 'long_term'", (now,),
+    ).fetchall()
+    for row in checkin_rows:
+        oid = row["id"]
+        try:
+            order = get_order(conn, oid)
+            room = get_room(conn, order["room_id"])
+            if not room or room["status"] == "维修":
+                continue
+            before = json.dumps({"status": "已预订"}, ensure_ascii=False)
+            conn.execute("BEGIN EXCLUSIVE")
+            conn.execute("UPDATE orders SET status = '已入住', updated_at = ? WHERE id = ?", (now, oid))
+            if order.get("settle_mode", "once") == "once":
+                has_income = conn.execute(
+                    "SELECT 1 FROM order_payments WHERE order_id = ? AND amount > 0 LIMIT 1", (oid,),
+                ).fetchone()
+                if not has_income:
+                    conn.execute(
+                        "INSERT INTO order_payments (order_id, amount, pay_date, remark, created_at)"
+                        " VALUES (?, ?, ?, '自动入住·先付', ?)",
+                        (oid, round(order["total_price"] or 0, 2), day_start(now), now),
+                    )
+            _sync_room_status(conn, order["room_id"])
+            _log_automation(conn, oid, "auto_checkin", "自动入住（单订单）", before)
+            conn.execute(
+                "UPDATE orders SET remark = CASE WHEN remark = '' THEN '【自动入住】' ELSE remark || '；【自动入住】' END WHERE id = ?",
+                (oid,),
+            )
+            conn.commit()
+            actions.append({"action": "auto_checkin", "order_id": oid, "note": "自动入住（单订单）"})
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
 
     # 单订单自动操作（自动退房 / 自动续住）
     rows = conn.execute(
@@ -1680,10 +1742,7 @@ def run_auto_maintenance(conn: sqlite3.Connection) -> list[dict]:
                     " VALUES (?, 'auto_extend', '自动续住（单订单）', ?, ?, 0)",
                     (oid, before, now),
                 )
-                conn.execute(
-                    "UPDATE orders SET remark = CASE WHEN remark = '' THEN '【自动续住】' ELSE remark || '；【自动续住】' END WHERE id = ?",
-                    (oid,),
-                )
+                _update_auto_extend_remark(conn, oid)
                 conn.commit()
                 actions.append({"action": "auto_extend", "order_id": oid, "note": "自动续住（单订单）"})
             else:
@@ -1829,7 +1888,7 @@ def set_order_automation(conn: sqlite3.Connection, order_id: int,
         raise AppError("长租订单不支持自动维护")
     conn.execute(
         "UPDATE orders SET automation_enabled = ?, auto_action = ?, updated_at = ? WHERE id = ?",
-        (1 if enabled else 0, action if action in ("checkout", "extend") else "checkout", now_ts(), order_id),
+        (1 if enabled else 0, action if action in ("checkin", "checkout", "extend") else "checkout", now_ts(), order_id),
     )
     conn.commit()
     return _order_joined(conn, order_id)

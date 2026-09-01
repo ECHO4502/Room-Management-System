@@ -456,4 +456,4 @@ class AutomationRollbackRequest(BaseModel):
 
 class OrderAutomationRequest(BaseModel):
     enabled: bool = True
-    action: str = Field("checkout", pattern="^(checkout|extend)$")
+    action: str = Field("checkout", pattern="^(checkin|checkout|extend)$")

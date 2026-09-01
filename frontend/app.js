@@ -578,6 +578,7 @@ const App = {
     function stripClass(seg) {
       return {
         'is-checkedout': seg.status === '已退房',
+        'is-auto': seg.auto === 1 || seg.auto === true,
         'is-checkedin': seg.status === '已入住',
       }
     }
@@ -1131,6 +1132,7 @@ const App = {
       autoActionPicker.value = false
     }
     const autoActionColumns = computed(() => [
+      { text: '自动入住', value: 'checkin' },
       { text: '自动退房', value: 'checkout' },
       { text: '自动续住', value: 'extend' },
     ])
@@ -1714,7 +1716,7 @@ const App = {
     function roomOptionLabel(r) {
       const t = orderDialog.form.order_type
       const base = r.room_number + ' ' + r.room_category + ' · '
-      if (t === 'hourly') return base + '钟点¥' + (r.hourly_price || '自动') + '/时'
+      if (t === 'hourly') return base + '钟点¥' + ((r.base_price || 0) / 24).toFixed(1) + '/时（按日租价折算）'
       if (t === 'long_term') return base + '长租¥' + r.base_price + '/日'
       return base + '全日¥' + r.base_price + '/日'
     }
@@ -1933,7 +1935,7 @@ const App = {
       const room = orderEditRooms.value.find((r) => r.id === f.room_id) || {}
       const base = Number(room.base_price) || 0
       if (f.order_type === 'hourly') {
-        const rate = Number(room.hourly_price) > 0 ? Number(room.hourly_price) : base / 24
+        const rate = base / 24
         const hours = Number(f.rent_hours) || 0
         return Math.round(Math.min(rate * hours, base || 0) * 100) / 100
       }
@@ -2165,6 +2167,27 @@ const App = {
       }
     }
 
+    async function confirmScheduledCheckout() {
+      const o = checkoutDialog.order
+      if (!o) return
+      checkoutDialog.saving = true
+      try {
+        const updated = await api.post('/orders/' + o.id + '/checkout', {
+          confirm: true,
+          total_price: Number(checkoutDialog.amount),
+          refund_amount: Number(checkoutDialog.refund) || 0,
+          end_timestamp: o.end_timestamp,
+        })
+        notify('已按预定时间退房，实收 ' + fmtMoney((Number(updated.total_price) || 0) + (Number(updated.adjust_amount) || 0)))
+        checkoutDialog.visible = false
+        detailDialog.visible = false
+        await loadAll()
+        if (activeView.value === 'orders') await loadOrders()
+      } catch (e) { /* 拦截器已提示 */ } finally {
+        checkoutDialog.saving = false
+      }
+    }
+
     function onStripClick(seg, day, evt, dayCells) {
       // 日结订单：按点击位置所在盒子（每晚分区）选中对应收款日期
       if (seg.settle_mode === 'daily' && seg.order_type !== 'hourly') {
@@ -2233,7 +2256,7 @@ const App = {
       if (!o) return 0
       const n = Number(extendDialog.count) || 0
       if (o.order_type === 'hourly') {
-        const rate = Number(o.hourly_price) > 0 ? Number(o.hourly_price) : (o.base_price || 0) / 24
+        const rate = (o.base_price || 0) / 24
         return Math.round(rate * n * 100) / 100
       }
       const rate = Number(o.daily_price) || Number(o.base_price) || 0
@@ -2387,7 +2410,7 @@ const App = {
       orderDialog, availableRooms, availableLoading, noRoom, selectedRoom,
       orderStartSec, orderEndSec, suggestedPrice, roomOptionLabel, onOrderTypeChange,
       openCreateOrder, resetPrice, saveOrder,
-      detailDialog, openDetailByOrder, checkoutDialog,
+      detailDialog, openDetailByOrder, checkoutDialog, confirmScheduledCheckout,
       openCheckout, confirmCheckout, doCheckin, doDelete,
       cancelDialog, openCancel, confirmCancel,
       onStripClick, detailPayDays, detailPayPaid, selectDetailPayDay,
@@ -3229,7 +3252,7 @@ const App = {
           </div>
           <div class="m-room-segs">
             <div v-for="seg in mobileSegments(room)" :key="seg.order_no + '-' + seg.start"
-                 class="m-seg" :class="{ 'm-seg-out': seg.status === '已退房' }"
+                 class="m-seg" :class="{ 'm-seg-out': seg.status === '已退房', 'm-seg-auto': seg.auto === 1 || seg.auto === true }"
                  :style="{ background: seg.status === '已退房' ? '#C0C4CC' : sourceColor(seg.guest_source), color: '#fff' }">
               {{ mobileSegLabel(seg) }}
             </div>
@@ -3909,6 +3932,7 @@ const App = {
             <template v-if="detailDialog.order.automation_enabled === 1">
               <el-radio-group :model-value="detailDialog.order.auto_action" size="small"
                               @change="(v) => setOrderAutomation(detailDialog.order, true, v)">
+                <el-radio-button value="checkin">自动入住</el-radio-button>
                 <el-radio-button value="checkout">自动退房</el-radio-button>
                 <el-radio-button value="extend">自动续住</el-radio-button>
               </el-radio-group>
@@ -3997,7 +4021,7 @@ const App = {
                         @update:model-value="(v) => setOrderAutomation(detailDialog.order, v, detailDialog.order.auto_action)" />
             <template v-if="detailDialog.order.automation_enabled === 1">
               <span class="s-label" style="margin-left: 4px;">到点操作</span>
-              <span class="s-label link" @click="autoActionPicker = true">{{ detailDialog.order.auto_action === 'extend' ? '自动续住' : '自动退房' }}</span>
+              <span class="s-label link" @click="autoActionPicker = true">{{ detailDialog.order.auto_action === 'checkin' ? '自动入住' : (detailDialog.order.auto_action === 'extend' ? '自动续住' : '自动退房') }}</span>
               <span class="s-label link danger" @click="rollbackAutomation({ orderId: detailDialog.order.id })">回滚自动操作</span>
             </template>
           </div>
@@ -4133,6 +4157,7 @@ const App = {
       </el-form>
       <template #footer>
         <el-button @click="checkoutDialog.visible = false">取消</el-button>
+        <el-button type="success" plain :loading="checkoutDialog.saving" @click="confirmScheduledCheckout">按预定退房</el-button>
         <el-button type="primary" :loading="checkoutDialog.saving" @click="confirmCheckout">确认退房</el-button>
       </template>
     </el-dialog>
@@ -4162,6 +4187,7 @@ const App = {
           </van-cell-group>
           <div class="m-popup-actions">
             <van-button size="small" round plain @click="checkoutDialog.visible = false">取消</van-button>
+            <van-button size="small" round plain type="success" :loading="checkoutDialog.saving" @click="confirmScheduledCheckout">按预定退房</van-button>
             <van-button size="small" round type="primary" :loading="checkoutDialog.saving"
                         @click="confirmCheckout">确认退房</van-button>
           </div>

@@ -428,6 +428,11 @@ body {
   opacity: .9;
 }
 
+/* 自动维护处理过的订单：绿色边框提示 */
+.strip-seg.is-auto {
+  box-shadow: inset 0 0 0 2px #67c23a;
+}
+
 /* 日结订单：未收日期红色虚线提醒，已收日期正常显示 */
 .strip-seg.pay-unpaid {
   border: 2px dashed #f56c6c;
@@ -704,6 +709,8 @@ body {
 .m-seg { font-size: 12px; padding: 4px 8px; border-radius: 6px; }
 .m-seg-full { background: #fde2e2; color: #8c2f2f; }
 .m-seg-hourly { background: #fdf3e0; color: #a05a00; }
+.m-seg-auto { box-shadow: inset 0 0 0 2px #67c23a; }
+
 .m-seg-out {
   background: repeating-linear-gradient(45deg, #d9dde3 0 5px, #c0c4cc 5px 10px) !important;
   color: #5c6470 !important;
