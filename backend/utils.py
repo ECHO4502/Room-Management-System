@@ -145,21 +145,22 @@ def calculate_price(order_type: str, base_price: float, start: int, end: int,
     """价格计算：
     - full_day（全日租）：按晚计费，不足一晚按一晚计；
     - long_term（长租）：按日计费，日租价 = 订单内日单价（未设置时用房间基础价）；
-    - hourly（钟点房）：按钟点房单价 × 时长；钟点单价未设置（0）时按全日价/24 折算。
+    - hourly（钟点房）：按日租原价计费，至少收一晚；订单时间每超过一个次日 12:00 即多收一晚。
     """
     if order_type in ("full_day", "long_term"):
         seconds = max(1, end - start)
         days = max(1, math.ceil(seconds / 86400))
         rate = daily_price if (daily_price or 0) > 0 else max(0.0, base_price)
         return round(rate * days, 2)
-    # 钟点房按日租原价计费：至少 1 晚日租价；
-    # 跨日 / 超 22 小时 / 过次日 12 时（占用跨过次日晚间）则增加一晚
+    # 钟点房按日租原价计费：至少收一晚日租价；
+    # 计费上限随超时逐日上调：订单时间每超过一个次日 12:00 即多收一晚
     base = max(0.0, base_price)
     end_ts = start + int(round((rent_hours if rent_hours and rent_hours > 0 else max(1.0, (end - start) / 3600.0)) * 3600))
     nights = 1
-    if (end_ts - start) > 22 * 3600 and day_start(end_ts) > day_start(start) \
-            and end_ts > day_start(start) + 36 * 3600:
-        nights = 2
+    boundary = day_start(start) + 36 * 3600
+    while end_ts > boundary:
+        nights += 1
+        boundary += 86400
     return round(base * nights, 2)
 # ---------------- 数据备份 ----------------
 

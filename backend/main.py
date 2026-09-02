@@ -39,7 +39,7 @@ import tray
 import utils
 from utils import AppError
 
-APP_VERSION = "1.3.7"
+APP_VERSION = "1.3.8"
 
 # 日志系统：控制台 + logs/app.log（10MB 滚动）
 app_logger.setup()
@@ -321,8 +321,8 @@ def api_delete_store(store_id: int, confirm: bool = Query(False)):
 @app.get("/api/rooms", response_model=list[schemas.RoomResponse], tags=["房间"])
 def api_list_rooms(status: Optional[str] = None, keyword: Optional[str] = None,
                    include_inactive: bool = False, store_id: Optional[int] = None,
-                   active: Optional[int] = None):
-    return _with_conn(lambda c: crud.get_all_rooms(c, status, keyword, include_inactive, store_id, active))
+                   active: Optional[int] = None, need_clean: Optional[int] = None):
+    return _with_conn(lambda c: crud.get_all_rooms(c, status, keyword, include_inactive, store_id, active, need_clean))
 
 
 @app.get("/api/available-rooms", response_model=list[schemas.RoomResponse], tags=["房间"])

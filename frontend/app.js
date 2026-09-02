@@ -111,11 +111,12 @@ const hmToSec = (s) => {
   const p = String(s || '').split(':').map(Number)
   return ((p[0] || 0) * 3600 + (p[1] || 0) * 60)
 }
-// 钟点房按日租原价计费：至少 1 晚；跨日 / 超 22 小时 / 过次日 12 时则 2 晚
+// 钟点房按日租原价计费：至少收一晚；订单时间每超过一个次日 12:00 即多收一晚
 const hourlyNights = (startSec, endSec) => {
-  const hours = (endSec - startSec) / 3600
-  return (hours > 22 && dayStart(endSec) > dayStart(startSec)
-          && endSec > dayStart(startSec) + 36 * 3600) ? 2 : 1
+  let nights = 1
+  let boundary = dayStart(startSec) + 36 * 3600
+  while (endSec > boundary) { nights += 1; boundary += 86400 }
+  return nights
 }
 
 const orderTypeLabel = (t) => ({ full_day: '全日租', hourly: '钟点房', long_term: '长租' }[t] || t)
@@ -818,7 +819,8 @@ const App = {
       try {
         roomList.value = await api.get('/rooms', {
           params: {
-            status: roomFilters.status || undefined,
+            status: roomFilters.status === '需打扫' ? undefined : (roomFilters.status || undefined),
+            need_clean: roomFilters.status === '需打扫' ? 1 : undefined,
             active: roomFilters.active === '' ? undefined : Number(roomFilters.active),
             include_inactive: roomFilters.active === '' ? true : undefined,
             keyword: roomFilters.keyword || undefined,
@@ -1001,8 +1003,14 @@ const App = {
     }
     async function saveBatchEdit() {
       const f = roomBatchEditDialog
-      if (f.set_base_price == null && (Number(f.delta_base_price) || 0) === 0
-          && f.set_hourly_price == null && (Number(f.delta_hourly_price) || 0) === 0) {
+      // 手机端数字输入为字符串，统一转数值后再校验/提交，避免 422
+      const toNum = (v) => (v === '' || v === null || v === undefined ? null : Number(v))
+      const setBase = toNum(f.set_base_price)
+      const setHourly = toNum(f.set_hourly_price)
+      const deltaBase = Number(f.delta_base_price) || 0
+      const deltaHourly = Number(f.delta_hourly_price) || 0
+      const floorVal = toNum(f.floor)
+      if (setBase == null && deltaBase === 0 && setHourly == null && deltaHourly === 0) {
         ElMessage.warning('请设置价格调整')
         return
       }
@@ -1011,11 +1019,11 @@ const App = {
         const res = await api.post('/rooms/batch-edit', {
           store_id: f.store_id || undefined,
           room_category: f.room_category || undefined,
-          floor: f.floor || undefined,
-          set_base_price: f.set_base_price,
-          delta_base_price: Number(f.delta_base_price) || 0,
-          set_hourly_price: f.set_hourly_price,
-          delta_hourly_price: Number(f.delta_hourly_price) || 0,
+          floor: floorVal || undefined,
+          set_base_price: setBase,
+          delta_base_price: deltaBase,
+          set_hourly_price: setHourly,
+          delta_hourly_price: deltaHourly,
         })
         notify('已更新 ' + res.updated + ' 间房间的价格')
         roomBatchEditDialog.visible = false
@@ -1754,7 +1762,7 @@ const App = {
         const rate = dailyPrice || room.base_price
         return Math.round(days * rate * 100) / 100
       }
-      // 钟点房自动计费：按日租价折算（日租价/24 每小时），上限为该房日租价
+      // 钟点房自动计费：按日租原价计费，至少一晚；每超过一个次日 12:00 多收一晚
       const nights = hourlyNights(s, s + (Number(orderDialog.form.rent_hours) || 0) * 3600)
       return Math.round((room.base_price || 0) * nights * 100) / 100
     })
@@ -2362,6 +2370,7 @@ const App = {
         guest_name: o.guest_name || '',
         guest_phone: o.guest_phone || '',
         guest_source: o.guest_source || '',
+        recorded_income: o.recorded_income || 0,
         remark: o.remark || '',
         start_timestamp: (o.start_timestamp || 0) * 1000,
         end_timestamp: (o.end_timestamp || 0) * 1000,
@@ -2533,6 +2542,7 @@ const App = {
           <el-radio-button value="已预订">已预订</el-radio-button>
           <el-radio-button value="已入住">已入住</el-radio-button>
           <el-radio-button value="维修">维修</el-radio-button>
+          <el-radio-button value="需打扫">需打扫</el-radio-button>
         </el-radio-group>
         <div class="room-filter-main">
           <el-radio-group v-model="roomFilters.active" size="small" @change="loadRoomList">
@@ -4015,9 +4025,11 @@ const App = {
             <el-input v-model="orderEdit.form.guest_phone" maxlength="20" />
           </el-form-item>
           <el-form-item label="客人来源">
-            <el-select v-model="orderEdit.form.guest_source" style="width: 100%">
+            <el-select v-model="orderEdit.form.guest_source" style="width: 100%"
+                       :disabled="(orderEdit.form.recorded_income || 0) > 0">
               <el-option v-for="s in sourceOptions" :key="s" :label="s" :value="s" />
             </el-select>
+            <span v-if="(orderEdit.form.recorded_income || 0) > 0" class="tip" style="font-size: 12px;">已计入收入，不可修改渠道</span>
           </el-form-item>
           <el-form-item label="入住日期">
             <el-date-picker v-model="orderEdit.form.start_date" type="date" value-format="x" style="width: 100%" />
@@ -4219,7 +4231,8 @@ const App = {
             </div>
             <div class="m-form-row">
               <span class="m-label">客人来源</span>
-              <select class="m-input" v-model="orderEdit.form.guest_source">
+              <select class="m-input" v-model="orderEdit.form.guest_source"
+                      :disabled="(orderEdit.form.recorded_income || 0) > 0">
                 <option v-for="s in sourceOptions" :key="s" :value="s">{{ s }}</option>
               </select>
             </div>

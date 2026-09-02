@@ -104,6 +104,7 @@ def init_db(db_path=None) -> Path:
         _migrate_rooms_remark_clean(conn)  # 房间备注与需打扫标记
         _migrate_order_automation_split(conn)  # 自动入住/离店独立开关
         _migrate_repay_backfill(conn)     # 历史已退房订单回款状态回填
+        _migrate_channel_id_normalize(conn)  # 历史脏数据：channel_id 回填为整数
         conn.executescript(ORDER_SETTLE_SEGMENTS_DDL)
         _migrate_settle_snapshot(conn)   # 订单原结算快照字段（续住分段专项）
         _ensure_indexes(conn)          # 重建索引（迁移重建表后会丢失）
@@ -526,6 +527,17 @@ def _migrate_order_automation_split(conn: sqlite3.Connection) -> None:
     conn.execute("UPDATE orders SET auto_checkin_enabled = 1 WHERE automation_enabled = 1 AND auto_action = 'checkin'")
     conn.execute("UPDATE orders SET auto_depart_enabled = 1 WHERE automation_enabled = 1 AND auto_action IN ('checkout', 'extend')")
 
+
+
+def _migrate_channel_id_normalize(conn: sqlite3.Connection) -> None:
+    """历史脏数据修正：orders.channel_id 曾以空字符串等文本写入，
+    统一回填为渠道整数 id；无法匹配渠道时置 0。"""
+    conn.execute(
+        "UPDATE orders SET channel_id = COALESCE("
+        " (SELECT c.id FROM channels c WHERE c.name = orders.guest_source COLLATE NOCASE LIMIT 1), 0)"
+        " WHERE channel_id IS NULL OR channel_id = '' OR typeof(channel_id) <> 'integer'"
+        " OR channel_id NOT IN (SELECT id FROM channels)"
+    )
 
 
 def _migrate_repay_backfill(conn: sqlite3.Connection) -> None:

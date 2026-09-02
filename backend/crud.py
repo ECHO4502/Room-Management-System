@@ -18,7 +18,15 @@ _ACTIVE = ("已预订", "已入住")
 
 
 def _to_dict(row) -> dict | None:
-    return dict(row) if row is not None else None
+    if row is None:
+        return None
+    d = dict(row)
+    if "channel_id" in d:
+        try:
+            d["channel_id"] = int(float(d["channel_id"] or 0))
+        except (TypeError, ValueError):
+            d["channel_id"] = 0
+    return d
 
 
 def _begin_exclusive(conn: sqlite3.Connection) -> None:
@@ -50,8 +58,9 @@ def get_all_rooms(conn: sqlite3.Connection, status: str | None = None,
                   keyword: str | None = None,
                   include_inactive: bool = False,
                   store_id: int | None = None,
-                  active: int | None = None) -> list[dict]:
-    """房间列表，支持按状态、启用/停用、房号/名称关键字、门店筛选。"""
+                  active: int | None = None,
+                  need_clean: int | None = None) -> list[dict]:
+    """房间列表，支持按状态、启用/停用、需打扫、房号/名称关键字、门店筛选。"""
     sql = ("SELECT r.*, (SELECT COUNT(*) FROM orders o WHERE o.room_id = r.id"
            " AND o.status IN ('已预订', '已入住')) AS active_orders"
            " FROM rooms r WHERE 1=1")
@@ -67,6 +76,9 @@ def get_all_rooms(conn: sqlite3.Connection, status: str | None = None,
     if status:
         sql += " AND r.status = ?"
         params.append(status)
+    if need_clean is not None:
+        sql += " AND r.need_clean = ?"
+        params.append(need_clean)
     if keyword:
         sql += " AND (r.room_number LIKE ? OR r.room_name LIKE ?)"
         kw = f"%{keyword}%"
@@ -199,7 +211,7 @@ def _order_joined(conn: sqlite3.Connection, order_id: int) -> dict | None:
     ).fetchone()
     if not row:
         return None
-    order = dict(row)
+    order = _to_dict(row)
     order["recorded_income"] = round(
         conn.execute(
             "SELECT COALESCE(SUM(amount), 0) AS s FROM order_payments WHERE order_id = ?",
@@ -416,6 +428,36 @@ def update_order(conn: sqlite3.Connection, order_id: int,
             if conflicts:
                 raise AppError("该房间在所选时间段内与已有订单冲突，请更换时间或房间", status_code=409)
 
+        # 客人来源/渠道：订单已计入收入后禁止修改，避免收支与回款错乱
+        old_source = (order.get("guest_source") or "").strip()
+        new_source = (fields.get("guest_source", old_source) or "").strip()
+        if ("guest_source" in fields or "channel_id" in fields) and (
+                new_source != old_source
+                or fields.get("channel_id", order.get("channel_id") or 0) != (order.get("channel_id") or 0)):
+            has_pos = conn.execute(
+                "SELECT 1 FROM order_payments WHERE order_id = ? AND amount > 0 LIMIT 1", (order_id,)
+            ).fetchone()
+            if has_pos:
+                raise AppError("订单已计入收入，渠道/客人来源不可修改；如需更正请删除订单后重新创建", status_code=400)
+        channel_id = (order.get("channel_id") or 0)
+        if "guest_source" in fields or "channel_id" in fields:
+            if fields.get("channel_id") not in (None, 0):
+                ch_row = conn.execute(
+                    "SELECT * FROM channels WHERE id = ?", (fields["channel_id"],)
+                ).fetchone()
+                if ch_row is None:
+                    raise AppError("渠道不存在", status_code=400)
+                channel_id = ch_row["id"]
+                new_source = ch_row["name"]
+            else:
+                channel_id = 0
+                if new_source:
+                    ch_row = conn.execute(
+                        "SELECT id FROM channels WHERE name = ? COLLATE NOCASE LIMIT 1", (new_source,)
+                    ).fetchone()
+                    if ch_row is not None:
+                        channel_id = ch_row["id"]
+
         # 金额：手动指定优先；时间/房间/计费方式变更时按房间价格自动重算
         time_fields_changed = any(
             k in fields for k in ("start_timestamp", "end_timestamp", "rent_hours", "order_type")
@@ -443,9 +485,9 @@ def update_order(conn: sqlite3.Connection, order_id: int,
              daily_price,
              fields.get("guest_name", order["guest_name"]).strip(),
              fields.get("guest_phone", order["guest_phone"]).strip(),
-             fields.get("guest_source", order.get("guest_source", "")).strip(),
-             fields.get("channel_id", order.get("channel_id") or 0),
+             new_source,
              fields.get("remark", order.get("remark", "")).strip(),
+             channel_id,
              start, end, rent_hours, total, extra_charge, new_status, now_ts(), order_id),
         )
         # 编辑金额后：同步调整收款记录，使收支合计等于新的订单金额
@@ -580,9 +622,7 @@ def checkout_order(conn: sqlite3.Connection, order_id: int,
         if abs(adjust) > 0.001:
             marker = f"多收{abs(adjust):g}" if adjust > 0 else f"少收{abs(adjust):g}"
         if diff > 0.001:
-            if pos_sum <= 0.001:
-                remark = '退房结算' + (("·" + marker) if marker else '')
-                remark = marker if marker else '退房结算'
+            remark = marker if marker else '退房结算'
             conn.execute(
                 "INSERT INTO order_payments (order_id, amount, pay_date, remark, created_at)"
                 " VALUES (?, ?, ?, ?, ?)",
@@ -602,11 +642,17 @@ def checkout_order(conn: sqlite3.Connection, order_id: int,
                 (order_id, -round(refund, 2), pay_date, now),
             )
 
-        # 回款：按订单渠道（guest_source 匹配渠道表）规则计算预计到账日期
+        # 回款：按订单渠道（guest_source 匹配渠道表）规则计算预计到账日期；
+        # 日结订单已按日收款（现金到账），退房时不再重置为待回款
         repay_status = ""
         expected_repay = None
         channel_row = None
-        if order.get("guest_source"):
+        daily_paid = order.get("settle_mode") == "daily" and conn.execute(
+            "SELECT 1 FROM order_payments WHERE order_id = ? AND amount > 0 LIMIT 1", (order_id,)
+        ).fetchone() is not None
+        if daily_paid:
+            repay_status = "已回款"
+        if order.get("guest_source") and not daily_paid:
             channel_row = conn.execute(
                 "SELECT * FROM channels WHERE name = ? COLLATE NOCASE LIMIT 1", (order["guest_source"],),
             ).fetchone()
@@ -788,9 +834,14 @@ def extend_order(conn: sqlite3.Connection, order_id: int, count: float,
             raise AppError("续住时间段与已有订单冲突，无法续住", status_code=409)
 
         total = round((order["total_price"] or 0) + extra_price, 2)
-        # 钟点房：单日收款上限不超过日租价
+        # 钟点房：计费上限随超时逐日上调（每超过一个次日 12:00 加一晚日租价）
         if order["order_type"] == "hourly":
-            total = round(min(total, max(0.0, room["base_price"])), 2)
+            _nights = 1
+            _boundary = day_start(order["start_timestamp"]) + 36 * 3600
+            while end > _boundary:
+                _nights += 1
+                _boundary += 86400
+            total = round(min(total, max(0.0, room["base_price"]) * _nights), 2)
         if order["order_type"] == "hourly":
             conn.execute(
                 "UPDATE orders SET end_timestamp = ?, rent_hours = ?, total_price = ?, updated_at = ?"
@@ -879,6 +930,12 @@ def upsert_order_payment(conn: sqlite3.Connection, order_id: int,
         row = conn.execute(
             "SELECT * FROM order_payments WHERE id = ?", (cur.lastrowid,)
         ).fetchone()
+    # 日结收款为现金到账：收款后直接标记已回款
+    if amount > 0 and order.get("settle_mode") == "daily":
+        conn.execute(
+            "UPDATE orders SET repay_status = '已回款', actual_repay_date = ?, updated_at = ? WHERE id = ?",
+            (day_start(now), now, order_id),
+        )
     conn.commit()
     return _to_dict(row)
 
@@ -2082,7 +2139,7 @@ def get_alerts(conn: sqlite3.Connection, store_id: int | None = None) -> list[di
     rows = conn.execute(
         "SELECT o.id, o.start_timestamp, r.room_number, r.room_category FROM orders o"
         " JOIN rooms r ON r.id = o.room_id"
-        " WHERE o.status = '已预订' AND o.start_timestamp < ? AND o.order_type != 'long_term'" + store_where,
+        " WHERE o.status = '已预订' AND o.start_timestamp < ?" + store_where,
         (now, *store_params),
     ).fetchall()
     for r in rows:
@@ -2095,7 +2152,7 @@ def get_alerts(conn: sqlite3.Connection, store_id: int | None = None) -> list[di
     rows = conn.execute(
         "SELECT o.id, o.end_timestamp, r.room_number FROM orders o"
         " JOIN rooms r ON r.id = o.room_id"
-        " WHERE o.status = '已入住' AND o.end_timestamp < ? AND o.order_type != 'long_term'" + store_where,
+        " WHERE o.status = '已入住' AND o.end_timestamp < ?" + store_where,
         (now, *store_params),
     ).fetchall()
     for r in rows:
