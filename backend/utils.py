@@ -8,7 +8,7 @@ import socket
 import sqlite3
 import time
 import zipfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 ACTIVE_ORDER_STATUSES = ("已预订", "已入住")
@@ -152,15 +152,15 @@ def calculate_price(order_type: str, base_price: float, start: int, end: int,
         days = max(1, math.ceil(seconds / 86400))
         rate = daily_price if (daily_price or 0) > 0 else max(0.0, base_price)
         return round(rate * days, 2)
-    # 钟点房自动计费：按日租价折算（日租价/24 每小时），不再使用房间钟点单价
-    rate = max(0.0, base_price) / 24.0
-    if rent_hours is not None and rent_hours > 0:
-        return round(min(rate * rent_hours, base_price), 2)
-    actual_hours = max(1, end - start) / 3600.0
-    hours = max(float(min_rent_hours), math.ceil(actual_hours / hourly_increment) * hourly_increment)
-    return round(min(rate * hours, base_price), 2)
-
-
+    # 钟点房按日租原价计费：至少 1 晚日租价；
+    # 跨日 / 超 22 小时 / 过次日 12 时（占用跨过次日晚间）则增加一晚
+    base = max(0.0, base_price)
+    end_ts = start + int(round((rent_hours if rent_hours and rent_hours > 0 else max(1.0, (end - start) / 3600.0)) * 3600))
+    nights = 1
+    if (end_ts - start) > 22 * 3600 and day_start(end_ts) > day_start(start) \
+            and end_ts > day_start(start) + 36 * 3600:
+        nights = 2
+    return round(base * nights, 2)
 # ---------------- 数据备份 ----------------
 
 def _pick_backup_dir() -> Path | None:
@@ -336,3 +336,38 @@ def restore_database(zip_path: str | Path, db_path: str | Path | None = None) ->
         except OSError:
             pass
     return db_path
+
+def calculate_expected_repay_date(settle_date: int, repay_type: str,
+                                  repay_days: int = 0, repay_weekday: int = 1,
+                                  repay_monthday: int = 1) -> int:
+    """按渠道回款规则计算预计到账日期（返回该日零点 Unix 秒）。
+
+    - direct：结算当日到账；
+    - days：结算日 + N 天；
+    - week：结算日所在周的指定星期（周一=1..周日=7），已过则下周；
+    - month：结算日所在月的指定日，已过则下月。
+    """
+    base_day = day_start(settle_date)
+    d = datetime.fromtimestamp(base_day)
+    if repay_type == "days":
+        return int(day_start(base_day + max(0, int(repay_days)) * 86400))
+    if repay_type == "week":
+        weekday = max(1, min(7, int(repay_weekday or 1)))
+        monday = d - timedelta(days=d.weekday())
+        target = monday + timedelta(days=weekday - 1)
+        if target <= d:
+            target += timedelta(days=7)
+        return int(day_start(target.timestamp()))
+    if repay_type == "month":
+        mday = max(1, min(28, int(repay_monthday or 1)))
+        try:
+            target = d.replace(day=mday)
+        except ValueError:
+            target = d.replace(day=28)
+        if target <= d:
+            if d.month == 12:
+                target = d.replace(year=d.year + 1, month=1, day=min(mday, 28))
+            else:
+                target = d.replace(month=d.month + 1, day=min(mday, 28))
+        return int(day_start(target.timestamp()))
+    return base_day  # direct：结算当日到账

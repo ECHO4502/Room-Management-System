@@ -12,7 +12,7 @@ from datetime import datetime
 
 import schemas
 from utils import (AppError, calculate_price, check_room_conflict, date_str,
-                   day_end, day_start, normalize_order_range, now_ts)
+                   day_end, day_start, normalize_order_range, now_ts, calculate_expected_repay_date)
 
 _ACTIVE = ("已预订", "已入住")
 
@@ -94,10 +94,10 @@ def create_room(conn: sqlite3.Connection, data: schemas.RoomCreate) -> dict:
     hourly = min(data.hourly_price or 0, data.base_price or 0)
     created_at = now_ts()
     cur = conn.execute(
-        "INSERT INTO rooms (room_number, room_name, room_category, base_price, hourly_price, status, is_active, store_id, created_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)",
+        "INSERT INTO rooms (room_number, room_name, room_category, base_price, hourly_price, status, is_active, store_id, remark, need_clean, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)",
         (number, (data.room_name or "").strip(), data.room_category, data.base_price, hourly,
-         data.status.value, data.store_id, created_at),
+         data.status.value, data.store_id, (data.remark or "").strip(), data.need_clean or 0, created_at),
     )
     conn.commit()
     return get_room(conn, cur.lastrowid)
@@ -217,6 +217,7 @@ def get_all_orders(conn: sqlite3.Connection, status: str | None = None,
                    date_from: int | None = None, date_to: int | None = None,
                    store_id: int | None = None,
                    order_type: str | None = None,
+                   guest_source: str | None = None,
                    date_mode: str = "overlap") -> list[dict]:
     """订单列表，支持按状态、类型、房间 ID、房号、客人姓名/手机号、日期范围、门店筛选。
 
@@ -250,6 +251,9 @@ def get_all_orders(conn: sqlite3.Connection, status: str | None = None,
         sql += " AND (o.guest_name LIKE ? OR o.guest_phone LIKE ? OR r.room_number LIKE ? OR o.order_no LIKE ?)"
         kw = f"%{keyword}%"
         params.extend([kw, kw, kw, kw])
+    if guest_source:
+        sql += " AND o.guest_source = ?"
+        params.append(guest_source)
     if date_from is not None and date_to is not None:
         if date_mode == "start":
             sql += " AND o.start_timestamp >= ? AND o.start_timestamp < ?"
@@ -331,12 +335,13 @@ def create_order(conn: sqlite3.Connection, data: schemas.OrderCreate) -> dict:
         order_no = _next_order_no(conn, now)
         cur = conn.execute(
             "INSERT INTO orders (order_no, room_id, order_type, settle_mode, daily_discount, daily_price,"
-            " guest_name, guest_phone, guest_source, remark,"
+            " guest_name, guest_phone, guest_source, remark, channel_id,"
             " start_timestamp, end_timestamp, rent_hours, total_price, status, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (order_no, data.room_id, data.order_type.value, data.settle_mode, 0, daily_price,
              data.guest_name.strip(),
              data.guest_phone.strip(), data.guest_source.strip(), data.remark.strip(),
+             data.channel_id or 0,
              start, end, data.rent_hours, total,
              data.status.value, now, now),
         )
@@ -350,6 +355,16 @@ def create_order(conn: sqlite3.Connection, data: schemas.OrderCreate) -> dict:
                 " VALUES (?, ?, ?, ?, ?)",
                 (cur.lastrowid, round(total, 2), day_start(now), pay_remark, now),
             )
+            # 直接到账渠道 + 先付：创建订单即视为已回款
+            if data.guest_source:
+                ch = conn.execute(
+                    "SELECT * FROM channels WHERE name = ? COLLATE NOCASE LIMIT 1", (data.guest_source,),
+                ).fetchone()
+                if ch is not None and ch["repay_type"] == "direct":
+                    conn.execute(
+                        "UPDATE orders SET repay_status = '已回款', actual_repay_date = ? WHERE id = ?",
+                        (day_start(now), cur.lastrowid),
+                    )
         conn.commit()
         return _order_joined(conn, cur.lastrowid)
     except Exception:
@@ -421,7 +436,7 @@ def update_order(conn: sqlite3.Connection, order_id: int,
         conn.execute(
             "UPDATE orders SET room_id = ?, order_type = ?, settle_mode = ?, daily_discount = 0, daily_price = ?,"
             " guest_name = ?, guest_phone = ?,"
-            " guest_source = ?, remark = ?, start_timestamp = ?, end_timestamp = ?, rent_hours = ?,"
+            " guest_source = ?, remark = ?, channel_id = ?, start_timestamp = ?, end_timestamp = ?, rent_hours = ?,"
             " total_price = ?, extra_charge = ?, status = ?, updated_at = ? WHERE id = ?",
             (room_id, order_type,
              fields.get("settle_mode", order.get("settle_mode", "once")),
@@ -429,6 +444,7 @@ def update_order(conn: sqlite3.Connection, order_id: int,
              fields.get("guest_name", order["guest_name"]).strip(),
              fields.get("guest_phone", order["guest_phone"]).strip(),
              fields.get("guest_source", order.get("guest_source", "")).strip(),
+             fields.get("channel_id", order.get("channel_id") or 0),
              fields.get("remark", order.get("remark", "")).strip(),
              start, end, rent_hours, total, extra_charge, new_status, now_ts(), order_id),
         )
@@ -526,7 +542,7 @@ def checkout_order(conn: sqlite3.Connection, order_id: int,
                    refund_amount: float | None = None,
                    confirm: bool = False) -> dict:
     """办理退房：改为「已退房」并生成收入/退款记录。
-    - 退房到账（ondeparture）：退房时按实收金额记一笔收入；
+    - 退房结算（ondeparture）：退房时按实收金额记一笔收入；
     - 一次性（once）：入住时已入账（先付后住），退房不再入账（旧订单未入账时补记）；
     - 日结（daily）：收入已按日标记，退房仅结束订单；
     - 退回金额：记负收入，从收入中扣除。
@@ -565,9 +581,8 @@ def checkout_order(conn: sqlite3.Connection, order_id: int,
             marker = f"多收{abs(adjust):g}" if adjust > 0 else f"少收{abs(adjust):g}"
         if diff > 0.001:
             if pos_sum <= 0.001:
-                remark = '退房到账' + (("·" + marker) if marker else '')
-            else:
-                remark = marker if marker else '退房加收'
+                remark = '退房结算' + (("·" + marker) if marker else '')
+                remark = marker if marker else '退房结算'
             conn.execute(
                 "INSERT INTO order_payments (order_id, amount, pay_date, remark, created_at)"
                 " VALUES (?, ?, ?, ?, ?)",
@@ -587,17 +602,96 @@ def checkout_order(conn: sqlite3.Connection, order_id: int,
                 (order_id, -round(refund, 2), pay_date, now),
             )
 
+        # 回款：按订单渠道（guest_source 匹配渠道表）规则计算预计到账日期
+        repay_status = ""
+        expected_repay = None
+        channel_row = None
+        if order.get("guest_source"):
+            channel_row = conn.execute(
+                "SELECT * FROM channels WHERE name = ? COLLATE NOCASE LIMIT 1", (order["guest_source"],),
+            ).fetchone()
+        if channel_row is not None:
+            ch = dict(channel_row)
+            expected_repay = calculate_expected_repay_date(
+                day_start(end), ch["repay_type"], ch["repay_days"], ch["repay_weekday"], ch["repay_monthday"],
+            )
+            repay_status = "已回款" if ch["repay_type"] == "direct" else "待回款"
+        channel_id = order.get("channel_id") or (channel_row["id"] if channel_row is not None else 0)
+        # 待回款：给最新正数收款记录备注预计回款日期
+        if repay_status == "待回款" and expected_repay:
+            lp = conn.execute(
+                "SELECT id FROM order_payments WHERE order_id = ? AND amount > 0 ORDER BY id DESC LIMIT 1", (order_id,),
+            ).fetchone()
+            if lp is not None:
+                conn.execute(
+                    "UPDATE order_payments SET remark = remark || '·预计 ' || ? || ' 回款' WHERE id = ?",
+                    (date_str(expected_repay), lp["id"]),
+                )
+        # settle segments: per-orig/extend independent repay schedule (extension special)
+        seg_repay = repay_status
+        ch_type = ch["repay_type"] if channel_row is not None else "direct"
+        ch_days = ch["repay_days"] if channel_row is not None else 0
+        ch_wd = ch["repay_weekday"] if channel_row is not None else 1
+        ch_md = ch["repay_monthday"] if channel_row is not None else 1
+        has_seg = conn.execute("SELECT 1 FROM order_settle_segments WHERE order_id = ? LIMIT 1", (order_id,)).fetchone()
+        if order.get("orig_end_timestamp") or has_seg:
+            if order.get("orig_end_timestamp"):
+                exp_orig = calculate_expected_repay_date(
+                    day_start(order["orig_end_timestamp"]), ch_type, ch_days, ch_wd, ch_md,
+                )
+                exists_orig = conn.execute(
+                    "SELECT 1 FROM order_settle_segments WHERE order_id = ? AND kind = 'orig' LIMIT 1", (order_id,),
+                ).fetchone()
+                if not exists_orig:
+                    remark_orig = "\u539f\u8ba2\u5355"  # 原订单
+                    conn.execute(
+                        "INSERT INTO order_settle_segments (order_id, kind, amount, settle_date, repay_status, expected_repay_date, remark, created_at)"
+                        " VALUES (?, 'orig', ?, ?, ?, ?, ?, ?)",
+                        (order_id, round(order.get("orig_total_price") or order["total_price"], 2),
+                         day_start(order["orig_end_timestamp"]), seg_repay, exp_orig, remark_orig, now),
+                    )
+            for seg in conn.execute(
+                "SELECT id, settle_date FROM order_settle_segments WHERE order_id = ? AND kind = 'extend' AND repay_status = ''",
+                (order_id,),
+            ).fetchall():
+                exp_seg = calculate_expected_repay_date(
+                    day_start(seg["settle_date"] or end), ch_type, ch_days, ch_wd, ch_md,
+                )
+                conn.execute(
+                    "UPDATE order_settle_segments SET repay_status = ?, expected_repay_date = ? WHERE id = ?",
+                    (seg_repay, exp_seg, seg["id"]),
+                )
         conn.execute(
+
             "UPDATE orders SET status = '已退房', end_timestamp = ?,"
-            " total_price = ?, adjust_amount = ?, refund_amount = ?, updated_at = ? WHERE id = ?",
-            (end, booked, adjust, round(refund, 2), now, order_id),
+            " total_price = ?, adjust_amount = ?, refund_amount = ?, repay_status = ?,"
+            " expected_repay_date = ?, channel_id = ?, updated_at = ? WHERE id = ?",
+            (end, booked, adjust, round(refund, 2), repay_status, expected_repay, channel_id, now, order_id),
         )
+        conn.execute("UPDATE rooms SET need_clean = 1 WHERE id = ?", (order["room_id"],))
         _sync_room_status(conn, order["room_id"])
         conn.commit()
         return _order_joined(conn, order_id)
     except Exception:
         conn.rollback()
         raise
+
+
+def mark_order_repaid(conn: sqlite3.Connection, order_id: int,
+                      actual_repay_date: int | None = None) -> dict:
+    """标记订单已回款：写入实际到账日期。"""
+    order = get_order(conn, order_id)
+    if not order:
+        raise AppError("订单不存在", 404)
+    if order["status"] != "已退房":
+        raise AppError("只有已退房订单才能标记回款")
+    actual = actual_repay_date or day_start(now_ts())
+    conn.execute(
+        "UPDATE orders SET repay_status = '已回款', actual_repay_date = ?, updated_at = ? WHERE id = ?",
+        (actual, now_ts(), order_id),
+    )
+    conn.commit()
+    return _order_joined(conn, order_id)
 
 
 def cancel_order(conn: sqlite3.Connection, order_id: int,
@@ -678,6 +772,10 @@ def extend_order(conn: sqlite3.Connection, order_id: int, count: float,
         if amount is not None:
             # 续住金额可手动调整
             extra_price = round(amount, 2)
+        # extend snapshot: record original end/price on first extension
+        first_extend = (order.get("orig_end_timestamp") is None) and order["order_type"] != "hourly"
+        orig_end_snap = order["end_timestamp"]
+        orig_total_snap = order["total_price"]
 
         if end <= start:
             raise AppError("结束时间必须晚于开始时间")
@@ -701,8 +799,11 @@ def extend_order(conn: sqlite3.Connection, order_id: int, count: float,
             )
         else:
             conn.execute(
-                "UPDATE orders SET end_timestamp = ?, total_price = ?, updated_at = ? WHERE id = ?",
-                (end, total, now_ts(), order_id),
+                "UPDATE orders SET end_timestamp = ?, total_price = ?,"
+                " orig_end_timestamp = CASE WHEN orig_end_timestamp IS NULL THEN ? ELSE orig_end_timestamp END,"
+                " orig_total_price = CASE WHEN orig_total_price IS NULL THEN ? ELSE orig_total_price END,"
+                " updated_at = ? WHERE id = ?",
+                (end, total, orig_end_snap, orig_total_snap, now_ts(), order_id),
             )
         # 先付（once）且已入住的订单：续住金额按续住日计入收入（先付后住），
         # 避免续住收入不计入或延后到退房日
@@ -712,11 +813,26 @@ def extend_order(conn: sqlite3.Connection, order_id: int, count: float,
                 " VALUES (?, ?, ?, '续住收款', ?)",
                 (order_id, extra_price, day_start(now_ts()), now_ts()),
             )
+        # extend segment: independent settle/repay record per extension
+        seg_remark = "\u7eed\u4f4f " + ("%g" % count) + ("\u5c0f\u65f6" if order["order_type"] == "hourly" else "\u5929") + "\uff08\u81f3 " + date_str(end) + "\uff09"
+        conn.execute(
+            "INSERT INTO order_settle_segments (order_id, kind, amount, settle_date, repay_status, remark, created_at)"
+            " VALUES (?, 'extend', ?, ?, '', ?, ?)",
+            (order_id, extra_price, day_start(end), seg_remark, now_ts()),
+        )
         conn.commit()
         return _order_joined(conn, order_id)
     except Exception:
         conn.rollback()
         raise
+
+
+def list_settle_segments(conn: sqlite3.Connection, order_id: int) -> list[dict]:
+    """订单续住分段结算与回款记录（orig 原段 / extend 续住段）。"""
+    rows = conn.execute(
+        "SELECT * FROM order_settle_segments WHERE order_id = ? ORDER BY id", (order_id,),
+    ).fetchall()
+    return [_to_dict(r) for r in rows]
 
 
 def list_order_payments(conn: sqlite3.Connection, order_id: int) -> list[dict]:
@@ -872,10 +988,29 @@ def get_today_statistics(conn: sqlite3.Connection, date_ts: int | None = None) -
         (day, tomorrow),
     ).fetchone()["s"]
     today_revenue = (pay_revenue or 0) + (manual_revenue or 0)
+    # 总销售额：当日已退房订单金额合计
+    total_sales = conn.execute(
+        "SELECT COALESCE(SUM(total_price), 0) AS s FROM orders"
+        " WHERE status = '已退房' AND end_timestamp >= ? AND end_timestamp < ?",
+        (day, tomorrow),
+    ).fetchone()["s"]
+    # 今日回款：已回款订单中实际到账日期为当天的金额
+    today_repay = conn.execute(
+        "SELECT COALESCE(SUM(total_price), 0) AS s FROM orders"
+        " WHERE repay_status = '已回款' AND actual_repay_date >= ? AND actual_repay_date < ?",
+        (day, tomorrow),
+    ).fetchone()["s"]
+    # 待回款：所有待回款订单金额合计
+    pending_repay = conn.execute(
+        "SELECT COALESCE(SUM(total_price), 0) AS s FROM orders WHERE repay_status = '待回款'",
+    ).fetchone()["s"]
     return {
         "expected_arrivals": expected_arrivals,
         "expected_checkouts": expected_checkouts,
         "today_revenue": round(today_revenue or 0, 2),
+        "total_sales": round(total_sales or 0, 2),
+        "today_repay": round(today_repay or 0, 2),
+        "pending_repay": round(pending_repay or 0, 2),
     }
 
 
@@ -1118,10 +1253,11 @@ def create_channel(conn: sqlite3.Connection, data: schemas.ChannelCreate) -> dic
     if dup:
         raise AppError("渠道名称已存在")
     cur = conn.execute(
-        "INSERT INTO channels (name, color, sort_order) VALUES (?, ?, ?)",
-        (name, data.color, data.sort_order),
-    )
-    conn.commit()
+        "INSERT INTO channels (name, color, sort_order, repay_type, repay_days, repay_weekday, repay_monthday)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (name, data.color, data.sort_order, data.repay_type, data.repay_days,
+         data.repay_weekday, data.repay_monthday),
+        )
     return _to_dict(
         conn.execute("SELECT * FROM channels WHERE id = ?", (cur.lastrowid,)).fetchone()
     )
@@ -1175,7 +1311,10 @@ def get_revenue_statistics(conn: sqlite3.Connection,
                            store_id: int | None = None,
                            start_ts: int | None = None,
                            end_ts: int | None = None,
+                           repay: str = "",
                            gran: str = "month",
+                           guest_source: str | None = None,
+                           kind_filter: str = "",
                            keyword: str | None = None) -> dict:
     """收支统计：可按门店与时间范围筛选。
     收入 = 收款记录（正数，含退房入账/日结收款）；
@@ -1200,15 +1339,26 @@ def get_revenue_statistics(conn: sqlite3.Connection,
         where += " AND (o.guest_name LIKE ? OR o.guest_phone LIKE ? OR r.room_number LIKE ? OR o.order_no LIKE ?)"
         kw = f"%{keyword.strip()}%"
         params.extend([kw, kw, kw, kw])
+    if guest_source:
+        where += " AND o.guest_source = ?"
+        params.append(guest_source)
+    # 回款/收支类型筛选只作用于列表明细，统计卡片保持当前周期全量
+    repay_filter = repay if repay in ("待回款", "已回款") else ""
 
     sel = ("SELECT p.amount, p.pay_date, p.created_at, p.remark AS pay_remark, o.id AS order_id,"
            " COALESCE(p.account_date, p.pay_date) AS acc_date,"
            " o.order_no, o.guest_name,"
-           " o.guest_source, r.room_number"
+           " o.guest_source, o.repay_status, r.room_number"
            " FROM orders o JOIN rooms r ON r.id = o.room_id"
            " JOIN order_payments p ON p.order_id = o.id")
-    income_rows = conn.execute(sel + where + " AND p.amount > 0 ORDER BY acc_date", params).fetchall()
-    refund_rows = conn.execute(sel + where + " AND p.amount < 0 ORDER BY acc_date", params).fetchall()
+    income_all = conn.execute(sel + where + " AND p.amount > 0 ORDER BY acc_date", params).fetchall()
+    refund_all = conn.execute(sel + where + " AND p.amount < 0 ORDER BY acc_date", params).fetchall()
+    income_rows = [r for r in income_all
+                   if (not repay_filter or r["repay_status"] == repay_filter)
+                   and kind_filter != "expense"]
+    refund_rows = [r for r in refund_all
+                   if (not repay_filter or r["repay_status"] == repay_filter)
+                   and kind_filter != "income"]
 
     exp_where = " WHERE 1=1"
     exp_params: list = []
@@ -1218,19 +1368,21 @@ def get_revenue_statistics(conn: sqlite3.Connection,
     if start_ts is not None and end_ts is not None:
         exp_where += " AND expense_date >= ? AND expense_date < ?"
         exp_params.extend([start_ts, end_ts])
-    if keyword:
-        exp_rows = []
-    else:
-        exp_rows = conn.execute(
-            "SELECT id, kind, reason, remark, guest_name, room_number, amount, expense_date, created_at FROM expenses"
+    exp_all = [] if keyword else conn.execute(
+        "SELECT id, kind, reason, remark, guest_name, room_number, amount, expense_date, created_at FROM expenses"
         + exp_where + " ORDER BY expense_date", exp_params
     ).fetchall()
+    exp_rows = exp_all
+    if kind_filter == "income":
+        exp_rows = [r for r in exp_rows if r["kind"] == "income"]
+    elif kind_filter == "expense":
+        exp_rows = [r for r in exp_rows if r["kind"] != "income"]
 
-    manual_income = sum((r["amount"] or 0) for r in exp_rows if r["kind"] == "income")
-    manual_expense = sum((r["amount"] or 0) for r in exp_rows if r["kind"] != "income")
-    total_income = sum((r["amount"] or 0) for r in income_rows) + manual_income
-    total_expense = sum(-(r["amount"] or 0) for r in refund_rows) \
-        + manual_expense
+    manual_income = sum((r["amount"] or 0) for r in exp_all if r["kind"] == "income")
+    manual_expense = sum((r["amount"] or 0) for r in exp_all if r["kind"] != "income")
+    total_income = sum((r["amount"] or 0) for r in income_all) + manual_income
+    repaid_income = sum((r["amount"] or 0) for r in income_all if r["repay_status"] == "已回款") + manual_income
+    total_expense = sum(-(r["amount"] or 0) for r in refund_all) + manual_expense
 
     def period_key(ts: int) -> str:
         # 全部/年：按月份汇总；月/日/自定义按日期汇总
@@ -1316,8 +1468,10 @@ def get_revenue_statistics(conn: sqlite3.Connection,
     return {
         "total_income": round(total_income, 2),
         "total_expense": round(total_expense, 2),
-        "net": round(total_income - total_expense, 2),
-        "income_count": len(income_rows) + sum(1 for r in exp_rows if r["kind"] == "income"),
+        "net": round(repaid_income - total_expense, 2),
+        "repaid_amount": round(repaid_income, 2),
+        "pending_amount": round(total_income - repaid_income, 2),
+        "income_count": len(income_all) + sum(1 for r in exp_all if r["kind"] == "income"),
         "gran": gran,
         "items": items,
     }
@@ -1566,6 +1720,23 @@ def _update_auto_extend_remark(conn: sqlite3.Connection, order_id: int) -> None:
     new_remark = (remark + "；" + tag) if remark else tag
     conn.execute("UPDATE orders SET remark = ? WHERE id = ?", (new_remark, order_id))
 
+def auto_settle_repay(conn: sqlite3.Connection) -> int:
+    """自动回款：预计到账日期已到的待回款订单自动转为已回款。"""
+    now = now_ts()
+    rows = conn.execute(
+        "SELECT id, expected_repay_date FROM orders"
+        " WHERE repay_status = '待回款' AND expected_repay_date IS NOT NULL AND expected_repay_date <= ?",
+        (now,),
+    ).fetchall()
+    for r in rows:
+        conn.execute(
+            "UPDATE orders SET repay_status = '已回款', actual_repay_date = expected_repay_date, updated_at = ? WHERE id = ?",
+            (now, r["id"]),
+        )
+    conn.commit()
+    return len(rows)
+
+
 def run_auto_maintenance(conn: sqlite3.Connection) -> list[dict]:
     """执行一次自动维护，返回动作摘要：
     - 全局：自动入住 / 自动退房（冲突检查）/ 自动续住（冲突检查）
@@ -1637,7 +1808,7 @@ def run_auto_maintenance(conn: sqlite3.Connection) -> list[dict]:
                     (oid, before, now),
                 )
                 conn.execute(
-                    "UPDATE order_payments SET remark = '自动退房·到账' WHERE order_id = ? AND remark LIKE '退房%' AND created_at >= ?",
+                    "UPDATE order_payments SET remark = '自动退房·结算' WHERE order_id = ? AND remark LIKE '退房%' AND created_at >= ?",
                     (oid, now),
                 )
                 conn.execute(
@@ -1684,7 +1855,7 @@ def run_auto_maintenance(conn: sqlite3.Connection) -> list[dict]:
     # 单订单自动入住（到点自动办理入住）
     checkin_rows = conn.execute(
         "SELECT id, room_id, order_type, settle_mode, start_timestamp, status, auto_action"
-        " FROM orders WHERE automation_enabled = 1 AND auto_action = 'checkin' AND status = '已预订'"
+        " FROM orders WHERE auto_checkin_enabled = 1 AND status = '已预订'"
         " AND start_timestamp <= ? AND order_type != 'long_term'", (now,),
     ).fetchall()
     for row in checkin_rows:
@@ -1724,7 +1895,7 @@ def run_auto_maintenance(conn: sqlite3.Connection) -> list[dict]:
     # 单订单自动操作（自动退房 / 自动续住）
     rows = conn.execute(
         "SELECT id, room_id, order_type, settle_mode, end_timestamp, status, daily_price, auto_action"
-        " FROM orders WHERE automation_enabled = 1 AND status = '已入住' AND end_timestamp <= ? AND order_type != 'long_term'", (now,)
+        " FROM orders WHERE auto_depart_enabled = 1 AND status = '已入住' AND end_timestamp <= ? AND order_type != 'long_term'", (now,)
     ).fetchall()
     for row in rows:
         oid = row["id"]
@@ -1759,7 +1930,7 @@ def run_auto_maintenance(conn: sqlite3.Connection) -> list[dict]:
                     (oid, before, now),
                 )
                 conn.execute(
-                    "UPDATE order_payments SET remark = '自动退房·到账' WHERE order_id = ? AND remark LIKE '退房%' AND created_at >= ?",
+                    "UPDATE order_payments SET remark = '自动退房·结算' WHERE order_id = ? AND remark LIKE '退房%' AND created_at >= ?",
                     (oid, now),
                 )
                 conn.execute(
@@ -1879,22 +2050,29 @@ def rollback_automation(conn: sqlite3.Connection, log_id: int | None = None,
 
 
 def set_order_automation(conn: sqlite3.Connection, order_id: int,
-                         enabled: bool, action: str = "checkout") -> dict:
-    """开启/关闭单订单自动维护；action: checkout 自动退房 / pay 自动缴费。"""
+                         checkin_enabled: bool = False,
+                         depart_enabled: bool = False,
+                         depart_action: str = "checkout") -> dict:
+    """开启/关闭单订单自动维护：自动入住与自动离店（退房/续住）独立开关。"""
     order = get_order(conn, order_id)
     if not order:
         raise AppError("订单不存在", 404)
     if order["order_type"] == "long_term":
         raise AppError("长租订单不支持自动维护")
+    enabled = 1 if (checkin_enabled or depart_enabled) else 0
     conn.execute(
-        "UPDATE orders SET automation_enabled = ?, auto_action = ?, updated_at = ? WHERE id = ?",
-        (1 if enabled else 0, action if action in ("checkin", "checkout", "extend") else "checkout", now_ts(), order_id),
+        "UPDATE orders SET automation_enabled = ?, auto_action = ?, auto_checkin_enabled = ?,"
+        " auto_depart_enabled = ?, updated_at = ? WHERE id = ?",
+        (enabled, depart_action if depart_action in ("checkout", "extend") else "checkout",
+         1 if checkin_enabled else 0, 1 if depart_enabled else 0, now_ts(), order_id),
     )
     conn.commit()
     return _order_joined(conn, order_id)
 
 
-def get_alerts(conn: sqlite3.Connection) -> list[dict]:
+def get_alerts(conn: sqlite3.Connection, store_id: int | None = None) -> list[dict]:
+    store_where = " AND r.store_id = ?" if store_id is not None else ""
+    store_params = [store_id] if store_id is not None else []
     """超时未处理提醒：应入住未处理、应退房未处理、长租日结先前日期未收款。"""
     now = now_ts()
     today = day_start(now)
@@ -1904,8 +2082,8 @@ def get_alerts(conn: sqlite3.Connection) -> list[dict]:
     rows = conn.execute(
         "SELECT o.id, o.start_timestamp, r.room_number, r.room_category FROM orders o"
         " JOIN rooms r ON r.id = o.room_id"
-        " WHERE o.status = '已预订' AND o.start_timestamp < ? AND o.order_type != 'long_term'",
-        (now,),
+        " WHERE o.status = '已预订' AND o.start_timestamp < ? AND o.order_type != 'long_term'" + store_where,
+        (now, *store_params),
     ).fetchall()
     for r in rows:
         alerts.append({
@@ -1917,8 +2095,8 @@ def get_alerts(conn: sqlite3.Connection) -> list[dict]:
     rows = conn.execute(
         "SELECT o.id, o.end_timestamp, r.room_number FROM orders o"
         " JOIN rooms r ON r.id = o.room_id"
-        " WHERE o.status = '已入住' AND o.end_timestamp < ? AND o.order_type != 'long_term'",
-        (now,),
+        " WHERE o.status = '已入住' AND o.end_timestamp < ? AND o.order_type != 'long_term'" + store_where,
+        (now, *store_params),
     ).fetchall()
     for r in rows:
         alerts.append({
@@ -1928,10 +2106,10 @@ def get_alerts(conn: sqlite3.Connection) -> list[dict]:
 
     # 长租日结：先前日期未收款
     rows = conn.execute(
-        "SELECT o.id, o.start_timestamp, o.daily_price, r.room_number FROM orders o"
+        "SELECT o.id, o.start_timestamp, o.end_timestamp, o.daily_price, r.room_number FROM orders o"
         " JOIN rooms r ON r.id = o.room_id"
-        " WHERE o.settle_mode = 'daily' AND o.status IN ('已预订', '已入住')"
-        " AND o.order_type = 'long_term'",
+        " WHERE o.settle_mode = 'daily' AND o.status IN ('已预订', '已入住')" + store_where + " AND o.order_type = 'long_term'",
+        tuple(store_params),
     ).fetchall()
     for r in rows:
         # 跳过起始时间异常（2000 年以前）的脏数据，避免日期异常
@@ -1943,7 +2121,8 @@ def get_alerts(conn: sqlite3.Connection) -> list[dict]:
         ).fetchall()}
         missing: list[str] = []
         cur = day_start(r["start_timestamp"])
-        while cur < today and len(missing) < 366:
+        end_limit = day_start(r["end_timestamp"])
+        while cur < today and cur < end_limit and len(missing) < 366:
             if cur not in paid:
                 missing.append(date_str(cur))
             cur += 86400

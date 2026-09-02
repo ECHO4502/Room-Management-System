@@ -60,6 +60,8 @@ class RoomCreate(BaseModel):
     room_category: str = Field("标准间", min_length=1, max_length=20, description="房型（可在系统设置中自定义）")
     base_price: float = Field(..., ge=0, description="全日租价格（元/晚）")
     hourly_price: float = Field(0, ge=0, description="钟点房价格（元/小时），0 表示按全日价/24 自动折算")
+    remark: str = Field("", max_length=200, description="房间备注")
+    need_clean: int = Field(0, ge=0, le=1)
     status: RoomStatus = Field(RoomStatus.AVAILABLE, description="房间状态")
     store_id: int = Field(1, ge=1, description="所属门店")
 
@@ -70,6 +72,8 @@ class RoomUpdate(BaseModel):
     room_category: Optional[str] = Field(None, min_length=1, max_length=20)
     base_price: Optional[float] = Field(None, ge=0)
     hourly_price: Optional[float] = Field(None, ge=0)
+    remark: Optional[str] = Field(None, max_length=200)
+    need_clean: Optional[int] = Field(None, ge=0, le=1)
     status: Optional[RoomStatus] = None
     is_active: Optional[int] = Field(None, ge=0, le=1)
     store_id: Optional[int] = Field(None, ge=1)
@@ -82,6 +86,8 @@ class RoomResponse(BaseModel):
     room_category: str
     base_price: float
     hourly_price: float = 0
+    remark: str = ""
+    need_clean: int = 0
     status: RoomStatus
     is_active: int = 1
     store_id: int = 1
@@ -95,12 +101,24 @@ class ChannelCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=20, description="渠道名称")
     color: str = Field("#909399", min_length=3, max_length=9, description="渠道颜色（十六进制）")
     sort_order: int = Field(0, ge=0)
+    repay_type: str = "direct"
+    repay_days: int = 0
+    repay_weekday: int = 1
+    repay_monthday: int = 1
+    repay_type: str = Field("direct", pattern="^(direct|days|week|month)$")
+    repay_days: int = Field(0, ge=0)
+    repay_weekday: int = Field(1, ge=1, le=7)
+    repay_monthday: int = Field(1, ge=1, le=31)
 
 
 class ChannelUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=20)
     color: Optional[str] = Field(None, min_length=3, max_length=9)
     sort_order: Optional[int] = Field(None, ge=0)
+    repay_type: Optional[str] = Field(None, pattern="^(direct|days|week|month)$")
+    repay_days: Optional[int] = Field(None, ge=0)
+    repay_weekday: Optional[int] = Field(None, ge=1, le=7)
+    repay_monthday: Optional[int] = Field(None, ge=1, le=31)
 
 
 class ChannelResponse(BaseModel):
@@ -108,6 +126,10 @@ class ChannelResponse(BaseModel):
     name: str
     color: str
     sort_order: int
+    repay_type: str = "direct"
+    repay_days: int = 0
+    repay_weekday: int = 1
+    repay_monthday: int = 1
 
 
 # ---------------- 订单 ----------------
@@ -120,6 +142,7 @@ class OrderCreate(BaseModel):
     guest_name: str = Field("", max_length=50, description="客人姓名（选填，空则显示散客）")
     guest_phone: str = Field("", max_length=30, description="联系电话")
     guest_source: str = Field("", max_length=20, description="客人来源：美团/线下/携程/其他")
+    channel_id: Optional[int] = Field(None, ge=0, description="所属渠道 id（回款规则）")
     remark: str = Field("", max_length=200, description="备注")
     start_timestamp: int = Field(..., ge=0, description="入住/开始时间（Unix 秒）")
     end_timestamp: Optional[int] = Field(None, ge=0, description="退房/结束时间（全日租必填）")
@@ -148,6 +171,7 @@ class OrderUpdate(BaseModel):
     guest_name: Optional[str] = Field(None, max_length=50)
     guest_phone: Optional[str] = Field(None, max_length=30)
     guest_source: Optional[str] = Field(None, max_length=20)
+    channel_id: Optional[int] = Field(None, ge=0)
     remark: Optional[str] = Field(None, max_length=200)
     start_timestamp: Optional[int] = Field(None, ge=0)
     end_timestamp: Optional[int] = Field(None, ge=0)
@@ -172,6 +196,10 @@ class OrderResponse(BaseModel):
     guest_name: str
     guest_phone: str
     guest_source: str = ""
+    channel_id: int = 0
+    repay_status: str = ""
+    expected_repay_date: Optional[int] = None
+    actual_repay_date: Optional[int] = None
     remark: str = ""
     start_timestamp: int
     end_timestamp: int
@@ -181,6 +209,8 @@ class OrderResponse(BaseModel):
     status: OrderStatus
     automation_enabled: int = 0
     auto_action: str = "checkout"
+    auto_checkin_enabled: int = 0
+    auto_depart_enabled: int = 0
     created_at: int
     updated_at: int
     room_number: Optional[str] = None
@@ -269,6 +299,9 @@ class TodayStatisticsOut(BaseModel):
     expected_checkouts: int
     today_revenue: float
 
+    total_sales: float = 0
+    today_repay: float = 0
+    pending_repay: float = 0
 
 class SegmentOut(BaseModel):
     """房间在某个自然日内的占用时间段。"""
@@ -287,6 +320,7 @@ class SegmentOut(BaseModel):
     guest_name: str = ""
     guest_source: str = ""
     total_price: float = 0
+    auto: bool = False
 
 
 class RoomStatusDay(BaseModel):
@@ -371,6 +405,8 @@ class RevenueOut(BaseModel):
     total_expense: float
     net: float
     income_count: int
+    repaid_amount: float = 0
+    pending_amount: float = 0
     gran: str
     items: list[RevenueItemOut]
 
@@ -454,6 +490,13 @@ class AutomationRollbackRequest(BaseModel):
     confirm: bool = Field(False)
 
 
+
+class RepayRequest(BaseModel):
+    """标记订单已回款；actual_repay_date 为空时按当天。"""
+    actual_repay_date: Optional[int] = Field(None, ge=0)
+
 class OrderAutomationRequest(BaseModel):
-    enabled: bool = True
-    action: str = Field("checkout", pattern="^(checkin|checkout|extend)$")
+    """单订单自动维护独立开关：自动入住 / 自动离店（退房或续住）互不影响。"""
+    checkin_enabled: bool = Field(False)
+    depart_enabled: bool = Field(False)
+    depart_action: str = Field("checkout", pattern="^(checkout|extend)$")

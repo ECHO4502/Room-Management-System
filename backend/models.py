@@ -24,6 +24,8 @@ CREATE TABLE IF NOT EXISTS rooms (
     status        TEXT    NOT NULL DEFAULT '空闲'
                   CHECK (status IN ('空闲', '已预订', '已入住', '维修')),
     is_active     INTEGER NOT NULL DEFAULT 1,
+    remark        TEXT    NOT NULL DEFAULT '',
+    need_clean    INTEGER NOT NULL DEFAULT 0,
     store_id      INTEGER NOT NULL DEFAULT 1 REFERENCES stores(id),
     created_at    INTEGER NOT NULL,
     UNIQUE (store_id, room_number)
@@ -53,6 +55,10 @@ CREATE TABLE IF NOT EXISTS orders (
     status          TEXT    NOT NULL DEFAULT '已预订'
                     CHECK (status IN ('已预订', '已入住', '已退房', '已取消')),
     created_at      INTEGER NOT NULL,
+    channel_id        INTEGER NOT NULL DEFAULT 0,
+    repay_status      TEXT    NOT NULL DEFAULT '',
+    expected_repay_date INTEGER,
+    actual_repay_date INTEGER,
     updated_at      INTEGER NOT NULL
 );
 """
@@ -105,7 +111,11 @@ CREATE TABLE IF NOT EXISTS channels (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     name       TEXT    NOT NULL UNIQUE,
     color      TEXT    NOT NULL DEFAULT '#909399',
-    sort_order INTEGER NOT NULL DEFAULT 0
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    repay_type    TEXT    NOT NULL DEFAULT 'direct',
+    repay_days    INTEGER NOT NULL DEFAULT 0,
+    repay_weekday INTEGER NOT NULL DEFAULT 1,
+    repay_monthday INTEGER NOT NULL DEFAULT 1
 );
 """
 
@@ -162,4 +172,22 @@ CREATE TABLE IF NOT EXISTS automation_logs (
 );
 CREATE INDEX IF NOT EXISTS idx_automation_logs_order ON automation_logs(order_id);
 CREATE INDEX IF NOT EXISTS idx_automation_logs_rolled ON automation_logs(rolled_back);
+"""
+
+
+# 订单分段结算与回款记录（续住专项）：kind=orig/extend；段内独立入账与回款
+ORDER_SETTLE_SEGMENTS_DDL = """
+CREATE TABLE IF NOT EXISTS order_settle_segments (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id      INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+    kind          TEXT    NOT NULL,               -- orig 原段 / extend 续住段
+    amount        REAL    NOT NULL DEFAULT 0,
+    settle_date   INTEGER,                        -- 该段结算日（原段=原退房日，续住段=续住结束日）
+    repay_status  TEXT    NOT NULL DEFAULT '',
+    expected_repay_date INTEGER,
+    actual_repay_date INTEGER,
+    remark        TEXT    NOT NULL DEFAULT '',
+    created_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_settle_seg_order ON order_settle_segments(order_id);
 """

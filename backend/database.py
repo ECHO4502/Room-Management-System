@@ -8,6 +8,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from utils import calculate_expected_repay_date, day_start
 from models import (
     AUTOMATION_LOGS_TABLE_DDL,
     CHANNELS_TABLE_DDL,
@@ -21,6 +22,7 @@ from models import (
     ROOMS_TABLE_DDL,
     SETTINGS_TABLE_DDL,
     STORES_TABLE_DDL,
+    ORDER_SETTLE_SEGMENTS_DDL,
 )
 
 # 首次启动写入的默认设置：(key, value, description)
@@ -98,6 +100,12 @@ def init_db(db_path=None) -> Path:
         _migrate_order_daily_price(conn)  # 订单新增日单价列（日结收款以订单日单价为准）
         _migrate_payment_account_date(conn)  # 收款记录新增入账日期列
         _migrate_order_adjust_amount(conn)  # 订单新增多收/少收差额列
+        _migrate_repay_schema(conn)      # 渠道回款规则与订单回款字段
+        _migrate_rooms_remark_clean(conn)  # 房间备注与需打扫标记
+        _migrate_order_automation_split(conn)  # 自动入住/离店独立开关
+        _migrate_repay_backfill(conn)     # 历史已退房订单回款状态回填
+        conn.executescript(ORDER_SETTLE_SEGMENTS_DDL)
+        _migrate_settle_snapshot(conn)   # 订单原结算快照字段（续住分段专项）
         _ensure_indexes(conn)          # 重建索引（迁移重建表后会丢失）
         _seed_settings(conn)
         _seed_initial_data(conn)
@@ -480,3 +488,75 @@ def _migrate_order_automation(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE orders ADD COLUMN automation_enabled INTEGER NOT NULL DEFAULT 0")
     if "auto_action" not in columns:
         conn.execute("ALTER TABLE orders ADD COLUMN auto_action TEXT NOT NULL DEFAULT 'checkout'")
+def _migrate_repay_schema(conn: sqlite3.Connection) -> None:
+    """渠道表补充回款规则字段；订单表补充渠道与回款状态字段。"""
+    ch_cols = [r["name"] for r in conn.execute("PRAGMA table_info(channels)").fetchall()]
+    for col, ddl in (("repay_type", "TEXT NOT NULL DEFAULT 'direct'"),
+                      ("repay_days", "INTEGER NOT NULL DEFAULT 0"),
+                      ("repay_weekday", "INTEGER NOT NULL DEFAULT 1"),
+                      ("repay_monthday", "INTEGER NOT NULL DEFAULT 1")):
+        if col not in ch_cols:
+            conn.execute(f"ALTER TABLE channels ADD COLUMN {col} {ddl}")
+    o_cols = [r["name"] for r in conn.execute("PRAGMA table_info(orders)").fetchall()]
+    for col, ddl in (("channel_id", "INTEGER NOT NULL DEFAULT 0"),
+                      ("repay_status", "TEXT NOT NULL DEFAULT ''"),
+                      ("expected_repay_date", "INTEGER"),
+                      ("actual_repay_date", "INTEGER")):
+        if col not in o_cols:
+            conn.execute(f"ALTER TABLE orders ADD COLUMN {col} {ddl}")
+
+
+def _migrate_rooms_remark_clean(conn: sqlite3.Connection) -> None:
+    """rooms 表补充备注与需打扫标记。"""
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(rooms)").fetchall()]
+    if "remark" not in cols:
+        conn.execute("ALTER TABLE rooms ADD COLUMN remark TEXT NOT NULL DEFAULT ''")
+    if "need_clean" not in cols:
+        conn.execute("ALTER TABLE rooms ADD COLUMN need_clean INTEGER NOT NULL DEFAULT 0")
+
+
+def _migrate_order_automation_split(conn: sqlite3.Connection) -> None:
+    """订单自动入住/离店独立开关（旧 automation_enabled/auto_action 迁移到新字段）。"""
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(orders)").fetchall()]
+    if "auto_checkin_enabled" not in cols:
+        conn.execute("ALTER TABLE orders ADD COLUMN auto_checkin_enabled INTEGER NOT NULL DEFAULT 0")
+    if "auto_depart_enabled" not in cols:
+        conn.execute("ALTER TABLE orders ADD COLUMN auto_depart_enabled INTEGER NOT NULL DEFAULT 0")
+    # 旧数据迁移：自动化开启时按原动作映射到新开关
+    conn.execute("UPDATE orders SET auto_checkin_enabled = 1 WHERE automation_enabled = 1 AND auto_action = 'checkin'")
+    conn.execute("UPDATE orders SET auto_depart_enabled = 1 WHERE automation_enabled = 1 AND auto_action IN ('checkout', 'extend')")
+
+
+
+def _migrate_repay_backfill(conn: sqlite3.Connection) -> None:
+    """历史已退房订单回款状态回填：按渠道规则补预计/实际到账日期；无渠道视为退房已到账。"""
+    rows = conn.execute(
+        "SELECT o.id, o.guest_source, o.end_timestamp,"
+        " c.repay_type, c.repay_days, c.repay_weekday, c.repay_monthday"
+        " FROM orders o LEFT JOIN channels c ON c.name = o.guest_source COLLATE NOCASE"
+        " WHERE o.status = '已退房' AND (o.repay_status IS NULL OR o.repay_status = '')"
+    ).fetchall()
+    for r in rows:
+        rt = r["repay_type"]
+        if rt == "direct":
+            conn.execute("UPDATE orders SET repay_status = '已回款', actual_repay_date = ? WHERE id = ?",
+                (day_start(r["end_timestamp"]), r["id"]))
+        elif rt:
+            exp = calculate_expected_repay_date(
+                day_start(r["end_timestamp"]), rt, r["repay_days"] or 0,
+                r["repay_weekday"] or 1, r["repay_monthday"] or 1,
+            )
+            conn.execute("UPDATE orders SET repay_status = '待回款', expected_repay_date = ? WHERE id = ?",
+                (exp, r["id"]))
+        else:
+            conn.execute("UPDATE orders SET repay_status = '已回款', actual_repay_date = ? WHERE id = ?",
+                (day_start(r["end_timestamp"]), r["id"]))
+
+
+def _migrate_settle_snapshot(conn: sqlite3.Connection) -> None:
+    """orders 表新增原结算快照字段（首次续住时记录原退房时间与原订单金额）。"""
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(orders)").fetchall()]
+    if "orig_end_timestamp" not in cols:
+        conn.execute("ALTER TABLE orders ADD COLUMN orig_end_timestamp INTEGER")
+    if "orig_total_price" not in cols:
+        conn.execute("ALTER TABLE orders ADD COLUMN orig_total_price REAL")

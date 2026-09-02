@@ -111,8 +111,15 @@ const hmToSec = (s) => {
   const p = String(s || '').split(':').map(Number)
   return ((p[0] || 0) * 3600 + (p[1] || 0) * 60)
 }
+// 钟点房按日租原价计费：至少 1 晚；跨日 / 超 22 小时 / 过次日 12 时则 2 晚
+const hourlyNights = (startSec, endSec) => {
+  const hours = (endSec - startSec) / 3600
+  return (hours > 22 && dayStart(endSec) > dayStart(startSec)
+          && endSec > dayStart(startSec) + 36 * 3600) ? 2 : 1
+}
+
 const orderTypeLabel = (t) => ({ full_day: '全日租', hourly: '钟点房', long_term: '长租' }[t] || t)
-const settleModeLabel = (m) => ({ once: '一次性先付', daily: '日结', ondeparture: '退房到账' }[m] || '一次性')
+const settleModeLabel = (m) => ({ once: '一次性先付', daily: '日结', ondeparture: '退房结算' }[m] || '一次性')
 const displayName = (n) => (n || '').toString().trim() ? n.toString().trim() : '散客'
 const orderStatusType = (s) => ({
   '已预订': 'warning',
@@ -275,7 +282,7 @@ const App = {
     }
 
     // ---------- 房态总览 ----------
-    const stats = reactive({ expected_arrivals: 0, expected_checkouts: 0, today_revenue: 0 })
+    const stats = reactive({ expected_arrivals: 0, expected_checkouts: 0, today_revenue: 0, today_repay: 0, pending_repay: 0, total_sales: 0 })
     const rooms = ref([])
     const statusMap = ref({}) // roomId -> { 'YYYY-MM-DD': 状态 }
     const segmentsMap = ref({}) // roomId -> { 'YYYY-MM-DD': [segments] }
@@ -287,7 +294,7 @@ const App = {
     const currentStoreId = ref(null)
     const storeDialog = reactive({ visible: false, saving: false, name: '' })
     // 订单/房间页面独立的门店筛选：默认跟随当前门店，可切换全部或其他门店
-    const orderStoreFilter = ref(null)
+    const orderStoreFilter = ref('all')
     const roomStoreFilter = ref(null)
 
     watch(currentStoreId, (v) => {
@@ -702,7 +709,7 @@ const App = {
       month: new Date().getMonth() + 1,
       day: Date.now(),
       range: null,
-      room_number: '', keyword: '', order_type: '',
+      room_number: '', keyword: '', order_type: 'all', source: 'all',
     })
 
     function orderRange() {
@@ -788,7 +795,7 @@ const App = {
       visible: false, isEdit: false, id: null, saving: false,
       form: {
         room_number: '', room_name: '', room_category: '标准间',
-        base_price: 100, hourly_price: 0, status: '空闲', is_active: 1, store_id: null,
+        base_price: 100, hourly_price: 0, status: '空闲', is_active: 1, remark: '',
       },
     })
     const roomCategoryPicker = ref(false)
@@ -846,6 +853,7 @@ const App = {
         room_category: row.room_category,
         base_price: row.base_price,
         hourly_price: row.hourly_price || 0,
+        remark: row.remark || '',
         status: row.status,
         is_active: row.is_active,
         store_id: row.store_id,
@@ -1127,30 +1135,30 @@ const App = {
     }
     function onAutoActionPick({ selectedOptions }) {
       if (selectedOptions && selectedOptions.length && detailDialog.order) {
-        setOrderAutomation(detailDialog.order, true, selectedOptions[0].value)
+        setOrderAutomation(detailDialog.order, detailDialog.order.auto_checkin_enabled === 1, true, selectedOptions[0].value)
       }
       autoActionPicker.value = false
     }
     const autoActionColumns = computed(() => [
-      { text: '自动入住', value: 'checkin' },
       { text: '自动退房', value: 'checkout' },
       { text: '自动续住', value: 'extend' },
     ])
-    async function setOrderAutomation(order, enabled, action) {
+    async function setOrderAutomation(order, checkinEnabled, departEnabled, departAction) {
       try {
         const updated = await api.post('/orders/' + order.id + '/automation', {
-          enabled,
-          action: action || 'checkout',
+          checkin_enabled: !!checkinEnabled,
+          depart_enabled: !!departEnabled,
+          depart_action: departAction || 'checkout',
         })
         if (detailDialog.order && detailDialog.order.id === updated.id) detailDialog.order = updated
-        notify(enabled ? '已开启该订单自动维护' : '已关闭该订单自动维护')
+        notify(checkinEnabled || departEnabled ? '已开启该订单自动维护' : '已关闭该订单自动维护')
       } catch (e) { /* 拦截器已提示 */ }
     }
 
     // ---------- 备份列表 / 读取备份 ----------
     const alerts = ref([])
     async function loadAlerts() {
-      try { alerts.value = await api.get('/alerts') } catch (e) { alerts.value = [] }
+      try { alerts.value = await api.get('/alerts', { params: { store_id: currentStoreId.value } }) } catch (e) { alerts.value = [] }
     }
     async function openAlertOrder(orderId) {
       try {
@@ -1247,6 +1255,15 @@ const App = {
       } catch (e) { /* 拦截器已提示 */ }
     }
 
+    async function toggleRoomClean(row, val) {
+      try {
+        await api.put('/rooms/' + row.id, { need_clean: val ? 1 : 0 })
+        row.need_clean = val ? 1 : 0
+        notify(val ? '房间已标记为需打扫' : '房间已标记为已打扫')
+        await loadAll()
+      } catch (e) { row.need_clean = val ? 0 : 1; /* 拦截器已提示 */ }
+    }
+
     async function saveRoom() {
       const f = roomDialog.form
       if (!f.room_number.trim()) { ElMessage.warning('请填写房间号'); return }
@@ -1268,6 +1285,7 @@ const App = {
         room_category: f.room_category,
         base_price: Number(f.base_price),
         hourly_price: Math.min(Number(f.hourly_price) || 0, Number(f.base_price) || 0),
+        remark: (f.remark || '').trim(),
         status: f.status,
         store_id: f.store_id || currentStoreId.value,
       }
@@ -1333,8 +1351,9 @@ const App = {
         }
         if (orderFilters.room_number.trim()) params.room_number = orderFilters.room_number.trim()
         if (orderFilters.keyword.trim()) params.keyword = orderFilters.keyword.trim()
-        if (orderFilters.order_type) params.order_type = orderFilters.order_type
-        params.store_id = orderStoreFilter.value || undefined
+        if (orderFilters.order_type && orderFilters.order_type !== 'all') params.order_type = orderFilters.order_type
+        if (orderFilters.source !== 'all') params.guest_source = orderFilters.source
+        params.store_id = orderStoreFilter.value === 'all' ? undefined : orderStoreFilter.value
         orderList.value = await api.get('/orders', { params })
       } finally {
         orderListLoading.value = false
@@ -1349,7 +1368,8 @@ const App = {
       orderFilters.range = null
       orderFilters.room_number = ''
       orderFilters.keyword = ''
-      orderFilters.order_type = ''
+      orderFilters.order_type = 'all'
+      orderFilters.source = 'all'
       loadOrders()
     }
 
@@ -1373,6 +1393,9 @@ const App = {
       month: new Date().getMonth() + 1,
       day: Date.now(),
       range: null,
+      repay: 'all',
+      source: 'all',
+      filter: 'all',
     })
     const revenueYears = computed(() => {
       // 起始年份固定 2026，随系统日期自动增加一年
@@ -1431,6 +1454,9 @@ const App = {
             store_id: revenueFilters.store_id || undefined,
             gran: revenueFilters.gran,
             keyword: revenueFilters.keyword.trim() || undefined,
+            repay: revenueFilters.filter === 'repaid' ? '已回款' : (revenueFilters.filter === 'pending' ? '待回款' : ''),
+            kind_filter: revenueFilters.filter === 'income' || revenueFilters.filter === 'repaid' || revenueFilters.filter === 'pending' ? 'income' : (revenueFilters.filter === 'expense' ? 'expense' : ''),
+            guest_source: revenueFilters.source === 'all' ? undefined : revenueFilters.source,
           },
         })
       } finally {
@@ -1594,6 +1620,7 @@ const App = {
     const channelDialog = reactive({
       visible: false, isEdit: false, id: null, saving: false,
       name: '', color: CHANNEL_COLORS[0],
+      repay_type: 'direct', repay_days: 3, repay_weekday: 1, repay_monthday: 1,
     })
 
     function openAddChannel() {
@@ -1601,6 +1628,10 @@ const App = {
       channelDialog.id = null
       channelDialog.name = ''
       channelDialog.color = CHANNEL_COLORS[0]
+      channelDialog.repay_type = 'direct'
+      channelDialog.repay_days = 3
+      channelDialog.repay_weekday = 1
+      channelDialog.repay_monthday = 1
       channelDialog.visible = true
     }
 
@@ -1609,7 +1640,19 @@ const App = {
       channelDialog.id = c.id
       channelDialog.name = c.name
       channelDialog.color = c.color
+      channelDialog.repay_type = c.repay_type || 'direct'
+      channelDialog.repay_days = c.repay_days || 0
+      channelDialog.repay_weekday = c.repay_weekday || 1
+      channelDialog.repay_monthday = c.repay_monthday || 1
       channelDialog.visible = true
+    }
+
+    function repayRuleLabel(c) {
+      if (!c) return ''
+      if (c.repay_type === 'days') return (c.repay_days || 0) + ' 日后到账'
+      if (c.repay_type === 'week') return '每周' + '一二三四五六日'[(c.repay_weekday || 1) - 1] + '到账'
+      if (c.repay_type === 'month') return '每月' + (c.repay_monthday || 1) + ' 号到账'
+      return '直接到账'
     }
 
     async function saveChannel() {
@@ -1618,10 +1661,14 @@ const App = {
       channelDialog.saving = true
       try {
         if (channelDialog.isEdit) {
-          await api.put('/channels/' + channelDialog.id, { name, color: channelDialog.color })
+          await api.put('/channels/' + channelDialog.id, { name, color: channelDialog.color,
+            repay_type: channelDialog.repay_type, repay_days: Number(channelDialog.repay_days) || 0,
+            repay_weekday: Number(channelDialog.repay_weekday) || 1, repay_monthday: Number(channelDialog.repay_monthday) || 1 })
           notify('渠道已更新')
         } else {
-          await api.post('/channels', { name, color: channelDialog.color })
+          await api.post('/channels', { name, color: channelDialog.color,
+            repay_type: channelDialog.repay_type, repay_days: Number(channelDialog.repay_days) || 0,
+            repay_weekday: Number(channelDialog.repay_weekday) || 1, repay_monthday: Number(channelDialog.repay_monthday) || 1 })
           notify('渠道已新增')
         }
         channelDialog.visible = false
@@ -1708,9 +1755,8 @@ const App = {
         return Math.round(days * rate * 100) / 100
       }
       // 钟点房自动计费：按日租价折算（日租价/24 每小时），上限为该房日租价
-      const rate = (room.base_price || 0) / 24
-      const hourlyTotal = (Number(orderDialog.form.rent_hours) || 0) * rate
-      return Math.round(Math.min(hourlyTotal, room.base_price || 0) * 100) / 100
+      const nights = hourlyNights(s, s + (Number(orderDialog.form.rent_hours) || 0) * 3600)
+      return Math.round((room.base_price || 0) * nights * 100) / 100
     })
 
     function roomOptionLabel(r) {
@@ -1725,7 +1771,7 @@ const App = {
       const f = orderDialog.form
       const t = f.order_type
       if (t === 'long_term' && !['once', 'daily'].includes(f.settle_mode)) f.settle_mode = 'daily'
-      // 日租与钟点房默认退房到账
+      // 日租与钟点房默认退房结算
       if (t !== 'long_term' && !['once', 'ondeparture'].includes(f.settle_mode)) f.settle_mode = 'ondeparture'
       syncPrice()
       fetchAvailableRooms()
@@ -1898,7 +1944,7 @@ const App = {
     )
 
     // ---------- 订单详情与操作 ----------
-    const detailDialog = reactive({ visible: false, order: null, loading: false, payments: [] })
+    const detailDialog = reactive({ visible: false, order: null, loading: false, payments: [], segments: [] })
     const detailPayDay = ref(0)
     const detailPayAmount = ref(0)
     const detailPaySaving = ref(false)
@@ -1935,9 +1981,9 @@ const App = {
       const room = orderEditRooms.value.find((r) => r.id === f.room_id) || {}
       const base = Number(room.base_price) || 0
       if (f.order_type === 'hourly') {
-        const rate = base / 24
-        const hours = Number(f.rent_hours) || 0
-        return Math.round(Math.min(rate * hours, base || 0) * 100) / 100
+        const sSec = Math.floor(Number(f.start_timestamp) / 1000)
+        const eSec = sSec + (Number(f.rent_hours) || 0) * 3600
+        return Math.round(base * hourlyNights(sSec, eSec) * 100) / 100
       }
       const s = Math.floor(Number(f.start_timestamp) / 1000)
       const e = Math.floor(Number(f.end_timestamp) / 1000)
@@ -2013,6 +2059,12 @@ const App = {
       openCreateOrder(room, day)
     }
 
+    const segTitle = "订单续住分段回款"
+    const segKindLabel = (s) => (s && s.kind === "orig") ? "原订单" : "续住"
+    const segSettleLabel = (s) => "结算 " + fmtDate(s && s.settle_date)
+    const segRepayLabel = (s) => (s && s.repay_status === "已回款") ? "已回款" : ((s && s.repay_status === "待回款") ? "待回款" : "待结算")
+    const segExpLabel = (s) => "预计 " + fmtDate(s && s.expected_repay_date) + " 回款"
+
     async function openDetailById(orderId, payDay) {
       try {
         const order = await api.get('/orders/' + orderId)
@@ -2039,6 +2091,7 @@ const App = {
 
     function openDetailByOrder(order, payDay) {
       orderEdit.enabled = false // 下次打开始终为订单信息展示，而非编辑页
+      api.get('/orders/' + order.id + '/segments').then((s) => { if (detailDialog.order && detailDialog.order.id === order.id) detailDialog.segments = s || [] }).catch(() => {})
       detailDialog.order = order
       detailDialog.visible = true
       if (order && order.order_type === 'long_term' && order.settle_mode === 'daily') {
@@ -2256,8 +2309,11 @@ const App = {
       if (!o) return 0
       const n = Number(extendDialog.count) || 0
       if (o.order_type === 'hourly') {
-        const rate = (o.base_price || 0) / 24
-        return Math.round(rate * n * 100) / 100
+        const newEnd = o.start_timestamp + ((Number(o.rent_hours) || 0) + n) * 3600
+        const oldEnd = o.start_timestamp + (Number(o.rent_hours) || 0) * 3600
+        const newTotal = (o.base_price || 0) * hourlyNights(o.start_timestamp, newEnd)
+        const oldTotal = (o.base_price || 0) * hourlyNights(o.start_timestamp, oldEnd)
+        return Math.round(Math.max(0, newTotal - oldTotal) * 100) / 100
       }
       const rate = Number(o.daily_price) || Number(o.base_price) || 0
       return Math.round(rate * Math.ceil(n) * 100) / 100
@@ -2411,6 +2467,7 @@ const App = {
       orderStartSec, orderEndSec, suggestedPrice, roomOptionLabel, onOrderTypeChange,
       openCreateOrder, resetPrice, saveOrder,
       detailDialog, openDetailByOrder, checkoutDialog, confirmScheduledCheckout,
+      segTitle, segKindLabel, segSettleLabel, segRepayLabel, segExpLabel,
       openCheckout, confirmCheckout, doCheckin, doDelete,
       cancelDialog, openCancel, confirmCancel,
       onStripClick, detailPayDays, detailPayPaid, selectDetailPayDay,
@@ -2429,10 +2486,10 @@ const App = {
       expenseDialog, openAddExpense, openEditExpense, saveExpense, removeExpense, onRevenueRowClick,
       entryDetail, openEntryDetail,
       onRevenueTouchStart, onRevenueTouchEnd, revenueShift, revenueBack,
-      channelDialog, openAddChannel, openEditChannel, saveChannel, removeChannel,
+      channelDialog, openAddChannel, openEditChannel, saveChannel, removeChannel, repayRuleLabel,
       quickDate, onQuickDate, alertOpen,
       detailPayDay, detailPayAmount, detailPaySaving, saveDetailPayment,
-      roomList, roomListLoading, roomFilters, roomStatusMeta, loadRoomList, toggleRoomActive, toggleRoomRepair,
+      roomList, roomListLoading, roomFilters, roomStatusMeta, loadRoomList, toggleRoomActive, toggleRoomRepair, toggleRoomClean,
       roomDialog, openCreateRoom, openEditRoom, saveRoom, removeRoom,
       roomCategoryPicker, roomStatusPicker, roomCategoryColumns, roomStatusColumns,
       onRoomCategoryPick, onRoomStatusPick,
@@ -2485,7 +2542,7 @@ const App = {
           </el-radio-group>
           <div class="room-filter-store">
             <el-select v-model="roomStoreFilter" style="width: 150px" @change="loadRoomList">
-              <el-option :value="null" label="全部门店" />
+          <el-option value="all" label="全部门店" />
               <el-option v-for="s in stores" :key="s.id" :label="s.name" :value="s.id" />
             </el-select>
             <el-input v-if="!isMobile" v-model="roomFilters.keyword" placeholder="房号/名称" clearable
@@ -2519,10 +2576,19 @@ const App = {
               钟点 ¥{{ row.hourly_price ? row.hourly_price + '/时' : '自动' }}
             </template>
           </el-table-column>
+          <el-table-column label="备注" min-width="140">
+            <template #default="{ row }">{{ row.remark || '-' }}</template>
+          </el-table-column>
           <el-table-column label="状态" width="100">
             <template #default="{ row }">
               <el-tag :type="row.status === '维修' ? 'info' : row.status === '空闲' ? 'success' : 'warning'"
                       size="small">{{ row.status }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="清洁" width="80" align="center">
+            <template #default="{ row }">
+              <el-switch v-model="row.need_clean" :active-value="1" :inactive-value="0" size="small"
+                         @change="(v) => toggleRoomClean(row, v)" />
             </template>
           </el-table-column>
           <el-table-column label="启用" width="70">
@@ -2534,11 +2600,6 @@ const App = {
           <el-table-column label="操作" width="150" fixed="right">
             <template #default="{ row }">
               <el-button link type="primary" size="small" @click="openEditRoom(row)">编辑</el-button>
-              <span class="repair-switch">
-                <el-switch :model-value="row.status === '维修'" size="small" inline-prompt
-                           active-text="修" inactive-text="空"
-                           @change="(v) => toggleRoomRepair(row, v)" />
-              </span>
               <el-button link type="danger" size="small" @click="removeRoom(row)">
                 {{ row.is_active ? '停用' : '删除' }}
               </el-button>
@@ -2548,6 +2609,7 @@ const App = {
         <div v-else class="m-rooms">
           <div class="m-room-card" v-for="room in roomList" :key="room.id">
             <div class="m-room-head">
+            <span v-if="room.need_clean" class="clean-mark" style="margin-left:auto;">需打扫</span>
               <span class="m-room-no">{{ room.room_number }}<span v-if="!roomStoreFilter" class="room-store-mark">（{{ storeName(room.store_id) }}）</span></span>
               <span class="m-room-name">{{ room.room_category }}</span>
               <span class="m-room-status" :class="roomStatusMeta(room).cls">{{ roomStatusMeta(room).text }}</span>
@@ -2555,8 +2617,11 @@ const App = {
             </div>
             <div class="m-room-segs">
               <div class="m-free">全日 ¥{{ room.base_price }} · 钟点 ¥{{ room.hourly_price ? room.hourly_price + '/时' : '自动' }}</div>
+              <div v-if="room.remark" class="m-room-remark">{{ room.remark }}</div>
             </div>
             <div class="m-room-actions">
+              <van-switch v-model="room.need_clean" :active-value="1" :inactive-value="0" size="20px"
+                          @update:model-value="(v) => toggleRoomClean(room, v)" />
               <van-button size="small" round type="primary" @click="openEditRoom(room)">编辑</van-button>
               <van-button size="small" round type="danger" @click="removeRoom(room)">
                 {{ room.is_active ? '停用' : '删除' }}
@@ -2606,14 +2671,16 @@ const App = {
               <span class="price-hint">上限=全日价（自动）</span>
             </span>
           </el-form-item>
-          <el-form-item label="状态">
-            <el-select v-model="roomDialog.form.status" style="width: 100%">
-              <el-option label="空闲" value="空闲" />
-              <el-option label="维修" value="维修" />
-            </el-select>
+          <el-form-item label="备注">
+            <el-input v-model="roomDialog.form.remark" placeholder="房间备注（选填）" maxlength="200" />
           </el-form-item>
           <el-form-item v-if="roomDialog.isEdit" label="启用">
             <el-switch v-model="roomDialog.form.is_active" :active-value="1" :inactive-value="0" />
+          </el-form-item>
+          <el-form-item label="维修">
+            <el-switch :model-value="roomDialog.form.status === '维修'"
+                        @update:model-value="(v) => roomDialog.form.status = v ? '维修' : '空闲'" />
+            <span class="price-hint" style="margin-left: 8px;">开启后该房间不可下单，关闭后按订单自动恢复状态</span>
           </el-form-item>
         </el-form>
         <template #footer>
@@ -2652,6 +2719,7 @@ const App = {
                           @update:model-value="(v) => roomDialog.form.status = v ? '维修' : '空闲'" />
             </template>
           </van-field>
+          <van-field v-model="roomDialog.form.remark" label="备注" placeholder="房间备注（选填）" />
         </div>
         <div class="m-popup-actions">
           <van-button block round plain @click="roomDialog.visible = false">取消</van-button>
@@ -2847,11 +2915,10 @@ const App = {
             <el-button type="primary" :loading="backingUp" @click="downloadBackup">一键备份</el-button>
             <el-button type="primary" plain @click="openBackupDialog">读取备份</el-button>
           </div>
-          <p class="tip">一键备份会把 ZIP 压缩包（内含 hotel.db）保存到 data/backups/ 目录；
-            系统每次启动也会自动备份到 data/backups/（保留最近 7 份）。</p>
-          <p class="tip">备份文件名包含时间与原因（启动自动备份 / 自动维护前保留 / 读取备份前保留）；读取备份前会自动保留当前数据。</p>
+          <p class="tip">一键备份会把 ZIP 压缩包（内含 hotel.db）保存到 data/backups/ 目录；系统每次启动也会自动备份（保留最近 7 份）。</p>
+          <p class="tip">备份文件名包含时间与原因；读取备份前会自动保留当前数据。</p>
         </div>
-        <div class="panel">
+        <div class="panel" v-if="!isMobile">
           <div class="panel-head"><span class="panel-title">手机扫码访问</span></div>
           <div class="qr-box">
             <img v-if="qrSrc" :src="qrSrc" alt="手机访问二维码" class="qr-img" />
@@ -2869,6 +2936,7 @@ const App = {
             <div class="channel-item" v-for="c in channels" :key="c.id">
               <span class="channel-swatch" :style="{ background: c.color }"></span>
               <span class="channel-name">{{ c.name }}</span>
+              <span class="channel-repay" v-if="c.repay_type">{{ repayRuleLabel(c) }}</span>
               <span class="channel-actions">
                 <el-button link type="primary" size="small" @click="openEditChannel(c)">编辑</el-button>
                 <el-button link type="danger" size="small" @click="removeChannel(c)">删除</el-button>
@@ -2877,6 +2945,18 @@ const App = {
             <p v-if="!channels.length" class="tip">暂无入住渠道，请先新增</p>
           </div>
           <p class="tip">渠道用于下单时选择客人来源，并在房态图中按渠道颜色显示；删除渠道不影响已有订单。</p>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><span class="panel-title">门店管理</span></div>
+          <div class="channel-list">
+            <div class="channel-item" v-for="s in stores" :key="s.id">
+              <span class="channel-name">{{ s.name }}</span>
+              <span class="channel-actions">
+                <el-button link type="danger" size="small" @click="removeStore(s)">删除</el-button>
+              </span>
+            </div>
+            <p class="tip">删除门店前需确保该门店下没有房间。</p>
+          </div>
         </div>
         <div class="panel">
           <div class="panel-head">
@@ -2912,8 +2992,10 @@ const App = {
                          @change="(v) => toggleAutoSetting('extend', v)" /></div>
           </div>
           <p class="tip">总开关开启时系统每 30 秒检查一次，自动操作会记录日志并支持回滚。</p>
-          <el-button style="margin-top: 10px; margin-right: 8px;" @click="openAutoLogs">查看自动操作记录</el-button>
-          <el-button style="margin-top: 10px;" type="danger" plain @click="rollbackAutomation({})">全局回滚自动操作</el-button>
+          <div class="settings-btn-row">
+            <el-button @click="openAutoLogs">查看自动操作记录</el-button>
+            <el-button type="danger" plain @click="rollbackAutomation({})">全局回滚自动操作</el-button>
+          </div>
         </div>
 
         <!-- 读取备份：PC -->
@@ -2972,7 +3054,8 @@ const App = {
       <div class="revenue-panel" v-loading="revenueLoading"
            @touchstart="onRevenueTouchStart" @touchend="onRevenueTouchEnd">
         <div class="filter-bar">
-          <el-select v-model="revenueFilters.store_id" clearable placeholder="全部门店" style="width: 150px">
+          <el-select v-model="revenueFilters.store_id" style="width: 150px" @change="loadRevenue">
+            <el-option :value="null" label="全部门店" />
             <el-option v-for="s in stores" :key="s.id" :label="s.name" :value="s.id" />
           </el-select>
           <el-select v-model="revenueFilters.gran" style="width: 110px" @change="loadRevenue">
@@ -2980,6 +3063,17 @@ const App = {
             <el-option value="year" label="年" />
             <el-option value="month" label="月" />
             <el-option value="day" label="日" />
+          </el-select>
+          <el-select v-model="revenueFilters.filter" style="width: 120px" @change="loadRevenue">
+            <el-option value="all" label="全部" />
+            <el-option value="income" label="收入" />
+            <el-option value="repaid" label="已回款" />
+            <el-option value="pending" label="待回款" />
+            <el-option value="expense" label="支出" />
+          </el-select>
+          <el-select v-model="revenueFilters.source" style="width: 110px" @change="loadRevenue">
+            <el-option value="all" label="全部平台" />
+            <el-option v-for="c in channels" :key="c.id" :label="c.name" :value="c.name" />
           </el-select>
           <el-button v-if="isMobile && revenueFilters.gran !== 'year' && revenueFilters.gran !== 'all'" class="rev-back-btn" plain @click="revenueBack">返回上一级</el-button>
           <div class="rev-date-row">
@@ -3026,7 +3120,15 @@ const App = {
           <div class="settings-stats">
             <div class="s-stat">
               <div class="s-stat-v">{{ fmtMoney(revenueData ? revenueData.total_income : 0) }}</div>
-              <div class="s-stat-l">总收入</div>
+              <div class="s-stat-l">总销售额</div>
+            </div>
+            <div class="s-stat">
+              <div class="s-stat-v">{{ fmtMoney(revenueData ? revenueData.repaid_amount : 0) }}</div>
+              <div class="s-stat-l">已回款</div>
+            </div>
+            <div class="s-stat">
+              <div class="s-stat-v">{{ fmtMoney(revenueData ? revenueData.pending_amount : 0) }}</div>
+              <div class="s-stat-l">待回款</div>
             </div>
             <div class="s-stat" v-if="!isMobile">
               <div class="s-stat-v">{{ revenueData ? revenueData.income_count : 0 }}</div>
@@ -3134,10 +3236,14 @@ const App = {
             <el-option value="day" label="日" />
           </el-select>
           <el-select v-model="orderFilters.order_type" @change="loadOrders">
-            <el-option value="" label="全部类型" />
+            <el-option value="all" label="全部类型" />
             <el-option value="full_day" label="全日租" />
             <el-option value="long_term" label="长租" />
             <el-option value="hourly" label="钟点房" />
+          </el-select>
+          <el-select v-model="orderFilters.source" style="width: 110px" @change="loadOrders">
+            <el-option value="all" label="全部平台" />
+            <el-option v-for="c in channels" :key="c.id" :label="c.name" :value="c.name" />
           </el-select>
           <el-input v-model="orderFilters.keyword" placeholder="订单号/客人/手机号" clearable
                     @keyup.enter="loadOrders" />
@@ -3221,6 +3327,14 @@ const App = {
           <div class="m-stat-v stat-income">{{ fmtMoney(stats.today_revenue) }}</div>
           <div class="m-stat-l">{{ mobileStatDateLabel }}收入</div>
         </div>
+        <div class="m-stat">
+          <div class="m-stat-v stat-income">{{ fmtMoney(stats.today_repay) }}</div>
+          <div class="m-stat-l">今日回款</div>
+        </div>
+        <div class="m-stat">
+          <div class="m-stat-v stat-income">{{ fmtMoney(stats.pending_repay) }}</div>
+          <div class="m-stat-l">待回款</div>
+        </div>
       </div>
 
       <div class="m-daybar">
@@ -3274,8 +3388,6 @@ const App = {
           <div v-for="s in stores" :key="s.id" class="store-tab"
                :class="{ 'is-active': s.id === currentStoreId }" @click="switchStore(s.id)">
             {{ s.name }}
-            <span v-if="stores.length > 1" class="store-del" title="删除门店"
-                  @click.stop="removeStore(s)">×</span>
           </div>
           <el-button size="small" type="primary" @click="openAddStore">+ 新增门店</el-button>
         </div>
@@ -3344,7 +3456,7 @@ const App = {
               </template>
               <template v-else>
                 <van-radio name="once">入住前实收</van-radio>
-                <van-radio name="ondeparture">退房到账</van-radio>
+                <van-radio name="ondeparture">退房结算</van-radio>
               </template>
             </van-radio-group>
           </div>
@@ -3414,6 +3526,14 @@ const App = {
           <div class="stat-value stat-income">{{ fmtMoney(stats.today_revenue) }}</div>
           <div class="stat-label">{{ statDateLabel }}收入</div>
         </div>
+        <div class="stat-card">
+          <div class="stat-value stat-income">{{ fmtMoney(stats.today_repay) }}</div>
+          <div class="stat-label">今日回款</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value stat-income">{{ fmtMoney(stats.pending_repay) }}</div>
+          <div class="stat-label">待回款</div>
+        </div>
         <div class="alert-card" v-if="!isMobile && alerts.length">
           <div class="alert-head" @click="alertOpen = !alertOpen">
             <span class="panel-title">待处理提醒（{{ alerts.length }}）</span>
@@ -3469,6 +3589,7 @@ const App = {
           <template v-for="room in rooms" :key="room.id">
             <div class="grid-room">
               <span class="room-no">{{ room.room_number }}</span>
+              <span v-if="room.need_clean" class="clean-mark" title="需打扫">需打扫</span>
               <span class="room-name">{{ room.room_category }}</span>
             </div>
             <div class="grid-cell" v-for="d in days" :key="d.date"
@@ -3550,8 +3671,6 @@ const App = {
           <div v-for="s in stores" :key="s.id" class="store-tab"
                :class="{ 'is-active': s.id === currentStoreId }" @click="switchStore(s.id)">
             {{ s.name }}
-            <span v-if="stores.length > 1" class="store-del" title="删除门店"
-                  @click.stop="removeStore(s)">×</span>
           </div>
           <el-button size="small" type="primary" @click="openAddStore">+ 新增门店</el-button>
         </div>
@@ -3562,15 +3681,19 @@ const App = {
     <template v-else>
       <div class="filter-bar">
         <el-select v-model="orderStoreFilter" style="width: 150px" @change="loadOrders">
-          <el-option :value="null" label="全部门店" />
+          <el-option value="all" label="全部门店" />
           <el-option v-for="s in stores" :key="s.id" :label="s.name" :value="s.id" />
         </el-select>
         <el-select v-model="orderFilters.order_type" style="width: 120px" @change="loadOrders">
-          <el-option value="" label="全部类型" />
+            <el-option value="all" label="全部类型" />
           <el-option value="full_day" label="全日租" />
           <el-option value="long_term" label="长租" />
           <el-option value="hourly" label="钟点房" />
         </el-select>
+          <el-select v-model="orderFilters.source" style="width: 110px" @change="loadOrders">
+            <el-option value="all" label="全部平台" />
+            <el-option v-for="c in channels" :key="c.id" :label="c.name" :value="c.name" />
+          </el-select>
         <el-select v-model="orderFilters.gran" style="width: 110px" @change="loadOrders">
           <el-option value="all" label="全部" />
           <el-option value="year" label="年" />
@@ -3698,7 +3821,7 @@ const App = {
             </template>
             <template v-else>
               <el-option value="once" label="入住前实收" />
-              <el-option value="ondeparture" label="退房到账" />
+              <el-option value="ondeparture" label="退房结算" />
             </template>
           </el-select>
         </el-form-item>
@@ -3820,6 +3943,17 @@ const App = {
           <el-descriptions-item label="时长">{{ orderDurationLabel(detailDialog.order) }}</el-descriptions-item>
           <el-descriptions-item label="备注" :span="2">{{ detailDialog.order.remark || '-' }}</el-descriptions-item>
         </el-descriptions>
+        <div v-if="detailDialog.segments && detailDialog.segments.length" class="seg-block">
+          <div class="seg-block-title">{{ segTitle }}</div>
+          <div v-for="s in detailDialog.segments" :key="s.id" class="seg-item">
+            <span class="seg-kind">{{ segKindLabel(s) }}</span>
+            <span class="seg-amt">{{ fmtMoney(s.amount) }}</span>
+            <span class="seg-date">{{ segSettleLabel(s) }}</span>
+            <span class="seg-status">{{ segRepayLabel(s) }}</span>
+            <span v-if="s.expected_repay_date" class="seg-date">{{ segExpLabel(s) }}</span>
+            <span v-if="s.remark" class="seg-remark">{{ s.remark }}</span>
+          </div>
+        </div>
         <div v-if="detailDialog.order && detailDialog.order.order_type === 'long_term' && detailDialog.order.settle_mode === 'daily'" class="detail-pay">
           <div class="panel-title">日结收款</div>
           <div class="pay-summary">
@@ -3870,7 +4004,7 @@ const App = {
               </template>
               <template v-else>
                 <el-option value="once" label="入住前实收" />
-                <el-option value="ondeparture" label="退房到账" />
+                <el-option value="ondeparture" label="退房结算" />
               </template>
             </el-select>
           </el-form-item>
@@ -3926,19 +4060,22 @@ const App = {
         </template>
         <template v-else>
           <div v-if="detailDialog.order && detailDialog.order.order_type !== 'long_term'" class="detail-auto">
-            <span class="s-label">自动维护</span>
-            <el-switch :model-value="detailDialog.order.automation_enabled === 1" size="small"
-                       @change="(v) => setOrderAutomation(detailDialog.order, v, detailDialog.order.auto_action)" />
-            <template v-if="detailDialog.order.automation_enabled === 1">
+            <span class="s-label">自动入住</span>
+            <el-switch :model-value="detailDialog.order.auto_checkin_enabled === 1" size="small"
+                       @change="(v) => setOrderAutomation(detailDialog.order, v, detailDialog.order.auto_depart_enabled === 1, detailDialog.order.auto_action)" />
+            <span class="s-label" style="margin-left: 8px;">到期自动操作</span>
+            <el-switch :model-value="detailDialog.order.auto_depart_enabled === 1" size="small"
+                       @change="(v) => setOrderAutomation(detailDialog.order, detailDialog.order.auto_checkin_enabled === 1, v, detailDialog.order.auto_action)" />
+            <template v-if="detailDialog.order.auto_depart_enabled === 1">
+              <span class="s-label" style="margin-left: 4px;">到期执行</span>
               <el-radio-group :model-value="detailDialog.order.auto_action" size="small"
-                              @change="(v) => setOrderAutomation(detailDialog.order, true, v)">
-                <el-radio-button value="checkin">自动入住</el-radio-button>
+                              @change="(v) => setOrderAutomation(detailDialog.order, detailDialog.order.auto_checkin_enabled === 1, true, v)">
                 <el-radio-button value="checkout">自动退房</el-radio-button>
                 <el-radio-button value="extend">自动续住</el-radio-button>
               </el-radio-group>
-              <el-button link type="danger" size="small"
-                         @click="rollbackAutomation({ orderId: detailDialog.order.id })">回滚自动操作</el-button>
             </template>
+            <el-button link type="danger" size="small"
+                       @click="rollbackAutomation({ orderId: detailDialog.order.id })">回滚自动操作</el-button>
           </div>
           <el-button @click="detailDialog.visible = false">关闭</el-button>
           <el-button type="primary" plain @click="openOrderEdit">编辑</el-button>
@@ -3980,6 +4117,17 @@ const App = {
             <van-cell title="状态" :value="detailDialog.order.status" />
             <van-cell title="备注" :value="detailDialog.order.remark || '-'" />
           </van-cell-group>
+          <div v-if="detailDialog.segments && detailDialog.segments.length" class="seg-block m-seg-block">
+            <div class="seg-block-title">{{ segTitle }}</div>
+            <div v-for="s in detailDialog.segments" :key="s.id" class="seg-item">
+              <span class="seg-kind">{{ segKindLabel(s) }}</span>
+              <span class="seg-amt">{{ fmtMoney(s.amount) }}</span>
+              <span class="seg-date">{{ segSettleLabel(s) }}</span>
+              <span class="seg-status">{{ segRepayLabel(s) }}</span>
+              <span v-if="s.expected_repay_date" class="seg-date">{{ segExpLabel(s) }}</span>
+              <span v-if="s.remark" class="seg-remark">{{ s.remark }}</span>
+            </div>
+          </div>
           <div v-if="detailDialog.order && detailDialog.order.order_type === 'long_term' && detailDialog.order.settle_mode === 'daily'" class="detail-pay m-detail-pay">
             <div class="panel-title">日结收款</div>
             <van-cell-group inset>
@@ -4016,14 +4164,17 @@ const App = {
                         size="small" round type="danger" @click="doDelete">删除</van-button>
           </div>
           <div v-if="detailDialog.order && detailDialog.order.order_type !== 'long_term'" class="m-detail-auto">
-            <span class="s-label">自动维护</span>
-            <van-switch :model-value="detailDialog.order.automation_enabled === 1" size="20px"
-                        @update:model-value="(v) => setOrderAutomation(detailDialog.order, v, detailDialog.order.auto_action)" />
-            <template v-if="detailDialog.order.automation_enabled === 1">
-              <span class="s-label" style="margin-left: 4px;">到点操作</span>
-              <span class="s-label link" @click="autoActionPicker = true">{{ detailDialog.order.auto_action === 'checkin' ? '自动入住' : (detailDialog.order.auto_action === 'extend' ? '自动续住' : '自动退房') }}</span>
-              <span class="s-label link danger" @click="rollbackAutomation({ orderId: detailDialog.order.id })">回滚自动操作</span>
-            </template>
+            <span class="s-label">自动入住</span>
+            <van-switch :model-value="detailDialog.order.auto_checkin_enabled === 1" size="20px"
+                        @update:model-value="(v) => setOrderAutomation(detailDialog.order, v, detailDialog.order.auto_depart_enabled === 1, detailDialog.order.auto_action)" />
+            <span class="s-label">到期自动操作</span>
+            <van-switch :model-value="detailDialog.order.auto_depart_enabled === 1" size="20px"
+                        @update:model-value="(v) => setOrderAutomation(detailDialog.order, detailDialog.order.auto_checkin_enabled === 1, v, detailDialog.order.auto_action)" />
+            <div v-if="detailDialog.order.auto_depart_enabled === 1" class="m-auto-line">
+              <span class="s-label">到期执行</span>
+              <span class="s-label link" @click="autoActionPicker = true">{{ detailDialog.order.auto_action === 'extend' ? '自动续住' : '自动退房' }}</span>
+            </div>
+            <span class="s-label link danger" @click="rollbackAutomation({ orderId: detailDialog.order.id })">回滚自动操作</span>
           </div>
         </template>
         <template v-else-if="detailDialog.order">
@@ -4054,7 +4205,7 @@ const App = {
                 </template>
                 <template v-else>
                   <van-radio name="once">入住前实收</van-radio>
-                  <van-radio name="ondeparture">退房到账</van-radio>
+                  <van-radio name="ondeparture">退房结算</van-radio>
                 </template>
               </van-radio-group>
             </div>
@@ -4232,6 +4383,25 @@ const App = {
                   :style="{ background: c }" @click="channelDialog.color = c"></span>
           </div>
         </el-form-item>
+        <el-form-item label="回款规则">
+          <el-select v-model="channelDialog.repay_type" style="width: 100%">
+            <el-option label="直接到账" value="direct" />
+            <el-option label="几日后到账" value="days" />
+            <el-option label="自然周到账" value="week" />
+            <el-option label="自然月到账" value="month" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="channelDialog.repay_type === 'days'" label="到账天数">
+          <el-input-number v-model="channelDialog.repay_days" :min="0" :precision="0" />
+        </el-form-item>
+        <el-form-item v-else-if="channelDialog.repay_type === 'week'" label="到账星期">
+          <el-select v-model="channelDialog.repay_weekday" style="width: 100%">
+            <el-option v-for="w in 7" :key="w" :label="'周' + '一二三四五六日'[w-1]" :value="w" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-else-if="channelDialog.repay_type === 'month'" label="每月到账日">
+          <el-input-number v-model="channelDialog.repay_monthday" :min="1" :max="31" />
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="channelDialog.visible = false">取消</el-button>
@@ -4251,6 +4421,29 @@ const App = {
                   :class="{ 'is-active': channelDialog.color === c }"
                   :style="{ background: c }" @click="channelDialog.color = c"></span>
           </div>
+        </div>
+        <div class="m-form-row">
+          <span class="m-label">回款规则</span>
+          <select class="m-input" v-model="channelDialog.repay_type">
+            <option value="direct">直接到账</option>
+            <option value="days">几日后到账</option>
+            <option value="week">自然周到账</option>
+            <option value="month">自然月到账</option>
+          </select>
+        </div>
+        <div v-if="channelDialog.repay_type === 'days'" class="m-form-row">
+          <span class="m-label">到账天数</span>
+          <input type="number" class="m-input" v-model.number="channelDialog.repay_days" min="0" />
+        </div>
+        <div v-else-if="channelDialog.repay_type === 'week'" class="m-form-row">
+          <span class="m-label">到账星期</span>
+          <select class="m-input" v-model.number="channelDialog.repay_weekday">
+            <option v-for="w in 7" :key="w" :value="w">{{ '周' + '一二三四五六日'[w-1] }}</option>
+          </select>
+        </div>
+        <div v-else-if="channelDialog.repay_type === 'month'" class="m-form-row">
+          <span class="m-label">每月到账日</span>
+          <input type="number" class="m-input" v-model.number="channelDialog.repay_monthday" min="1" max="31" />
         </div>
       </div>
       <div class="m-popup-actions">
@@ -4457,3 +4650,4 @@ const App = {
 createApp(App)
   .use(ElementPlus, { locale: zhCn })
   .mount('#app')
+

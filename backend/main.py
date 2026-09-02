@@ -39,7 +39,7 @@ import tray
 import utils
 from utils import AppError
 
-APP_VERSION = "1.2.3"
+APP_VERSION = "1.3.7"
 
 # 日志系统：控制台 + logs/app.log（10MB 滚动）
 app_logger.setup()
@@ -150,9 +150,9 @@ def api_backup_download():
         filename=zip_path.name,
     )
 @app.get("/api/alerts", tags=["系统"])
-def api_alerts():
-    """超时未处理提醒（应入住/应退房/长租未收款）。"""
-    return _with_conn(crud.get_alerts)
+def api_alerts(store_id: Optional[int] = None):
+    """超时未处理提醒（应入住/应退房/长租未收款，可按门店）。"""
+    return _with_conn(lambda c: crud.get_alerts(c, store_id))
 
 
 @app.post("/api/backup/manual", tags=["系统"])
@@ -246,13 +246,14 @@ def api_room_status(start_date: int, end_date: int, room_id: Optional[int] = Non
 def api_statistics_revenue(start_ts: Optional[int] = None, end_ts: Optional[int] = None,
                            store_id: Optional[int] = None,
                            gran: str = Query("month"),
-                           keyword: Optional[str] = None):
-    """收支统计：按门店与时间范围筛选；gran=year/month/day/custom；keyword 匹配客人姓名/手机号/房号/订单号。"""
+                           repay: str = Query(""),
+                           keyword: Optional[str] = None,
+                           guest_source: Optional[str] = None,
+                           kind_filter: str = Query("")):
+    """收支统计：按门店与时间范围筛选；gran=year/month/day/custom；repay 回款状态（全部/已回款/待回款）。"""
     return _with_conn(
-        lambda c: crud.get_revenue_statistics(c, store_id, start_ts, end_ts, gran, keyword)
+        lambda c: crud.get_revenue_statistics(c, store_id, start_ts, end_ts, repay, gran, guest_source, kind_filter, keyword)
     )
-
-
 @app.post("/api/expenses", response_model=schemas.ExpenseResponse, status_code=201, tags=["统计"])
 def api_create_expense(data: schemas.ExpenseCreate):
     """新增支出：支出时间（默认当日）、理由、金额、备注。"""
@@ -392,6 +393,7 @@ def api_batch_edit_rooms(data: schemas.RoomBatchEdit):
 def api_list_orders(status: Optional[str] = None, room_id: Optional[int] = None,
                     room_number: Optional[str] = None,
                     order_type: Optional[str] = None,
+                    guest_source: Optional[str] = None,
                     guest_name: Optional[str] = None, guest_phone: Optional[str] = None,
                     keyword: Optional[str] = None,
                     date_from: Optional[int] = None, date_to: Optional[int] = None,
@@ -400,7 +402,7 @@ def api_list_orders(status: Optional[str] = None, room_id: Optional[int] = None,
     return _with_conn(
         lambda c: crud.get_all_orders(c, status, room_id, room_number, guest_name,
                                       guest_phone, keyword, date_from, date_to, store_id,
-                                      order_type, date_mode)
+                                      order_type, guest_source, date_mode)
     )
 
 
@@ -497,7 +499,17 @@ def api_automation_rollback(data: schemas.AutomationRollbackRequest):
 
 @app.post("/api/orders/{order_id}/automation", response_model=schemas.OrderResponse, tags=["自动维护"])
 def api_set_order_automation(order_id: int, data: schemas.OrderAutomationRequest):
-    return _with_conn(lambda c: crud.set_order_automation(c, order_id, data.enabled, data.action))
+    return _with_conn(lambda c: crud.set_order_automation(c, order_id, data.checkin_enabled, data.depart_enabled, data.depart_action))
+
+@app.get("/api/orders/{order_id}/segments", tags=["订单"])
+def api_order_segments(order_id: int):
+    """订单的续住分段结算与回款记录。"""
+    return _with_conn(lambda c: crud.list_settle_segments(c, order_id))
+
+@app.post("/api/orders/{order_id}/repay", response_model=schemas.OrderResponse, tags=["订单"])
+def api_mark_order_repaid(order_id: int, data: schemas.RepayRequest):
+    """标记订单已回款：写入实际到账日期。"""
+    return _with_conn(lambda c: crud.mark_order_repaid(c, order_id, data.actual_repay_date))
 # ---------------- 设置 ----------------
 
 @app.get("/api/settings", response_model=list[schemas.SettingsItem], tags=["设置"])
@@ -607,6 +619,7 @@ if __name__ == "__main__":
                 conn = database.get_connection()
                 try:
                     crud.run_auto_maintenance(conn)
+                    crud.auto_settle_repay(conn)
                 finally:
                     conn.close()
             except Exception:

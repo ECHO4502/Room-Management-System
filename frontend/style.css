@@ -1211,8 +1211,11 @@ body {
 .backup-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #303133; }
 .backup-time { color: #909399; font-size: 12px; }
 .room-store-mark { color: #909399; font-size: 12px; }
-.detail-auto { flex: 1; display: flex; align-items: center; gap: 12px; min-width: 0; }
+.detail-auto { flex: 1; display: flex; align-items: center; gap: 12px; min-width: 0; flex-wrap: nowrap; }
+.detail-auto > * { flex-shrink: 0; }
+.detail-auto .s-label, .detail-auto .el-radio-button { white-space: nowrap; }
 .m-detail-auto { display: flex; align-items: center; gap: 10px; padding: 10px 16px; flex-wrap: wrap; }
+.m-detail-auto .s-label { white-space: nowrap; }
 .s-label.link { color: #409eff; }
 .s-label.link.danger { color: #f56c6c; }
 .auto-log-dialog .el-dialog__body { max-height: 520px; overflow-y: auto; }
@@ -1245,3 +1248,52 @@ body {
 .pay-item { display: flex; gap: 16px; font-size: 13px; color: #303133; }
 .pay-add { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
 .m-detail-pay { padding: 10px 16px; }
+
+/* 下拉选项选择后的展示文字统一为黑色，便于阅读 */
+
+/* 下拉框选中值常态显示为黑色（覆盖 Element Plus 灰色） */
+.el-select .el-select__selected-item,
+.el-select .el-select__selection-item,
+.el-select .el-select__placeholder,
+.el-select .el-input__inner { color: #000 !important; }
+.m-room-remark { font-size: 12px; color: #909399; padding: 2px 8px 4px; }
+
+.channel-repay { font-size: 12px; color: #909399; margin-left: 8px; }
+
+@media (max-width: 767px) {
+  .settings-panel .panel-head .el-button { width: auto; flex: 0 0 auto; }
+  .settings-panel .el-button { width: 100%; }
+  .m-room-actions .van-switch { flex: 0 0 auto; }
+}
+
+/* 需打扫标记 */
+.clean-mark {
+  color: #e6a23c;
+  font-size: 11px;
+  border: 1px solid #e6a23c;
+  border-radius: 3px;
+  padding: 0 3px;
+  margin-left: 4px;
+  white-space: nowrap;
+}
+
+@media (max-width: 767px) {
+  .settings-panel .settings-btn-row,
+  .settings-panel .panel > div[style*="flex"] { flex-direction: column !important; align-items: stretch; }
+  .settings-panel .settings-btn-row .el-button,
+  .settings-panel .panel > div[style*="flex"] .el-button { width: 100% !important; margin: 0 0 8px 0 !important; }
+  .settings-panel .settings-btn-row .el-button:last-child,
+  .settings-panel .panel > div[style*="flex"] .el-button:last-child { margin-bottom: 0 !important; }
+}
+
+/* 续住分段回款展示 */
+.seg-block { margin: 10px 0; padding: 8px 10px; background: #f5f7fa; border-radius: 6px; }
+.m-seg-block { margin: 0 16px 10px; }
+.seg-block-title { font-weight: 600; color: #1f2d3d; margin-bottom: 6px; font-size: 13px; }
+.seg-item { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 12px; color: #303133; line-height: 1.6; }
+.seg-kind { color: #409eff; }
+.seg-amt { font-weight: 600; }
+.seg-date { color: #909399; }
+.seg-status { color: #e6a23c; }
+.seg-remark { color: #909399; font-style: normal; }
+
