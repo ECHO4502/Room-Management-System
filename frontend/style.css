@@ -884,7 +884,7 @@ body {
 
 /* 收支汇总表（年/月/自定义与单日）：固定列宽并居中显示，避免末尾空白 */
 .rev-table-center {
-  max-width: 930px;
+  max-width: 1180px;
   margin: 0 auto;
 }
 .rev-table-center .el-table__header th,

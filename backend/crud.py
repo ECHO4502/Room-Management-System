@@ -2151,7 +2151,7 @@ def set_order_automation(conn: sqlite3.Connection, order_id: int,
 def get_alerts(conn: sqlite3.Connection, store_id: int | None = None) -> list[dict]:
     store_where = " AND r.store_id = ?" if store_id is not None else ""
     store_params = [store_id] if store_id is not None else []
-    """超时未处理提醒：应入住未处理、应退房未处理、长租日结先前日期未收款。"""
+    """超时未处理提醒：应入住/应退房未处理、未清洁房间临近入住、长租日结先前日期未收款。"""
     now = now_ts()
     today = day_start(now)
     alerts: list[dict] = []
@@ -2180,6 +2180,21 @@ def get_alerts(conn: sqlite3.Connection, store_id: int | None = None) -> list[di
         alerts.append({
             "type": "checkout", "order_id": r["id"], "room_number": r["room_number"],
             "message": f"房间 {r['room_number']} 应退房未处理（{date_str(r['end_timestamp'])}）",
+        })
+
+    # 未清洁房间：2 小时内有待入住订单时提醒提前打扫
+    rows = conn.execute(
+        "SELECT o.id, r.room_number, o.start_timestamp FROM orders o"
+        " JOIN rooms r ON r.id = o.room_id"
+        " WHERE r.need_clean = 1 AND o.status = '已预订'"
+        " AND o.start_timestamp > ? AND o.start_timestamp <= ? + 7200" + store_where,
+        (now, now, *store_params),
+    ).fetchall()
+    for r in rows:
+        hm = datetime.fromtimestamp(r["start_timestamp"]).strftime("%H:%M")
+        alerts.append({
+            "type": "clean", "order_id": r["id"], "room_number": r["room_number"],
+            "message": f"房间 {r['room_number']} 尚未打扫，订单将于 {hm} 入住（不足 2 小时）",
         })
 
     # 长租日结：先前日期未收款

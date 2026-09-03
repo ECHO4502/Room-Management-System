@@ -1771,7 +1771,7 @@ const App = {
     function roomOptionLabel(r) {
       const t = orderDialog.form.order_type
       const base = r.room_number + ' ' + r.room_category + ' · '
-      if (t === 'hourly') return base + '钟点¥' + ((r.base_price || 0) / 24).toFixed(1) + '/时（按日租价折算）'
+      if (t === 'hourly') return base + '钟点¥' + r.base_price + '/晚'
       if (t === 'long_term') return base + '长租¥' + r.base_price + '/日'
       return base + '全日¥' + r.base_price + '/日'
     }
@@ -3175,13 +3175,13 @@ const App = {
               <el-table-column label="摘要" width="250">
                 <template #default="{ row }">{{ row.kind === 'expense' ? (row.reason || row.period) : row.period }}</template>
               </el-table-column>
-              <el-table-column label="备注" width="250">
+              <el-table-column label="备注" width="360">
                 <template #default="{ row }">{{ row.remark || '-' }}</template>
               </el-table-column>
               <el-table-column label="收入" width="120">
                 <template #default="{ row }">{{ row.kind === 'income' ? fmtMoney(row.income) : '-' }}</template>
               </el-table-column>
-              <el-table-column label="支出" width="120">
+              <el-table-column label="支出" min-width="120">
                 <template #default="{ row }">{{ row.kind === 'expense' ? fmtMoney(row.expense) : '-' }}</template>
               </el-table-column>
             </template>
