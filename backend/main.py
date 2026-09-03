@@ -39,7 +39,7 @@ import tray
 import utils
 from utils import AppError
 
-APP_VERSION = "1.3.8"
+APP_VERSION = "1.3.9"
 
 # 日志系统：控制台 + logs/app.log（10MB 滚动）
 app_logger.setup()

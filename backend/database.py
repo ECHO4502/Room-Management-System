@@ -8,7 +8,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from utils import calculate_expected_repay_date, day_start
+from utils import calculate_expected_repay_date, day_start, now_ts
 from models import (
     AUTOMATION_LOGS_TABLE_DDL,
     CHANNELS_TABLE_DDL,
@@ -104,9 +104,10 @@ def init_db(db_path=None) -> Path:
         _migrate_rooms_remark_clean(conn)  # 房间备注与需打扫标记
         _migrate_order_automation_split(conn)  # 自动入住/离店独立开关
         _migrate_repay_backfill(conn)     # 历史已退房订单回款状态回填
-        _migrate_channel_id_normalize(conn)  # 历史脏数据：channel_id 回填为整数
         conn.executescript(ORDER_SETTLE_SEGMENTS_DDL)
         _migrate_settle_snapshot(conn)   # 订单原结算快照字段（续住分段专项）
+        _migrate_channel_id_normalize(conn)  # 历史脏数据：channel_id 回填为整数
+        _migrate_legacy_repay_sync(conn)     # 旧版本数据自动同步：回款状态/冗余日志
         _ensure_indexes(conn)          # 重建索引（迁移重建表后会丢失）
         _seed_settings(conn)
         _seed_initial_data(conn)
@@ -538,6 +539,68 @@ def _migrate_channel_id_normalize(conn: sqlite3.Connection) -> None:
         " WHERE channel_id IS NULL OR channel_id = '' OR typeof(channel_id) <> 'integer'"
         " OR channel_id NOT IN (SELECT id FROM channels)"
     )
+
+
+def _migrate_legacy_repay_sync(conn: sqlite3.Connection) -> None:
+    """旧版本数据自动同步：清理指向已删除订单的冗余日志，
+    并按业务规则补齐历史收款状态（日结现金、已取消收入、先付直接到账/无渠道现金），
+    避免旧数据在收支统计中显示为未知待回款/冗余。"""
+    # 1) 清理指向已删除订单的冗余自动日志
+    conn.execute("DELETE FROM automation_logs WHERE order_id NOT IN (SELECT id FROM orders)")
+
+    # 2) 日结订单：已有收款记录即现金到账 → 已回款
+    rows = conn.execute(
+        "SELECT o.id, MAX(COALESCE(p.account_date, p.pay_date)) AS got"
+        " FROM orders o JOIN order_payments p ON p.order_id = o.id AND p.amount > 0"
+        " WHERE o.settle_mode = 'daily' AND o.status <> '已取消'"
+        " AND (o.repay_status IS NULL OR o.repay_status = '')"
+        " GROUP BY o.id"
+    ).fetchall()
+    for r in rows:
+        got = day_start(r["got"]) if r["got"] else None
+        conn.execute(
+            "UPDATE orders SET repay_status = '已回款', actual_repay_date = ?,"
+            " expected_repay_date = NULL, updated_at = ? WHERE id = ?",
+            (got, now_ts(), r["id"]),
+        )
+        conn.execute(
+            "UPDATE order_settle_segments SET repay_status = '已回款',"
+            " actual_repay_date = COALESCE(settle_date, ?) WHERE order_id = ?"
+            " AND (repay_status IS NULL OR repay_status = '')",
+            (got, r["id"]),
+        )
+
+    # 3) 已取消收入/先付直接到账、无渠道现金 → 已回款；
+    #    先付网络渠道（美团/携程等）延后到账 → 明确标记待回款，不再以空状态显示
+    rows = conn.execute(
+        "SELECT o.id, o.status, o.settle_mode,"
+        " MIN(COALESCE(p.account_date, p.pay_date)) AS got,"
+        " COALESCE((SELECT c.repay_type FROM channels c"
+        "           WHERE c.name = o.guest_source COLLATE NOCASE LIMIT 1), '') AS rt"
+        " FROM orders o JOIN order_payments p ON p.order_id = o.id AND p.amount > 0"
+        " WHERE (o.repay_status IS NULL OR o.repay_status = '')"
+        " GROUP BY o.id"
+    ).fetchall()
+    for r in rows:
+        if r["status"] == '已取消':
+            got = day_start(r["got"]) if r["got"] else None
+            conn.execute(
+                "UPDATE orders SET repay_status = '已回款', actual_repay_date = ?,"
+                " expected_repay_date = NULL, updated_at = ? WHERE id = ?",
+                (got, now_ts(), r["id"]),
+            )
+        elif r["settle_mode"] == "once" and r["rt"] in ("direct", ""):
+            got = day_start(r["got"]) if r["got"] else None
+            conn.execute(
+                "UPDATE orders SET repay_status = '已回款', actual_repay_date = ?,"
+                " expected_repay_date = NULL, updated_at = ? WHERE id = ?",
+                (got, now_ts(), r["id"]),
+            )
+        elif r["settle_mode"] == "once":
+            conn.execute(
+                "UPDATE orders SET repay_status = '待回款', updated_at = ? WHERE id = ?",
+                (now_ts(), r["id"]),
+            )
 
 
 def _migrate_repay_backfill(conn: sqlite3.Connection) -> None:

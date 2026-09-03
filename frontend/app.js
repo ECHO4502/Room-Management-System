@@ -258,6 +258,7 @@ const App = {
         orderDialog.form.guest_source = selectedOptions[0].value
       }
       guestSourcePicker.value = false
+      syncSettleByChannel()
     }
 
     async function askConfirm(opts) {
@@ -1551,8 +1552,8 @@ const App = {
     function onRevenueRowClick(row) {
       const g = revenueFilters.gran
       if (!row) return
-      if (g === 'day') {
-        // 手动收支：打开详情（含编辑/删除）；订单收支：打开订单详情
+      if (g === 'day' || g === 'all') {
+        // 手动收支：打开详情（含编辑/删除）；订单收支：直接打开订单详情
         if (row.expense_id) openEntryDetail(row)
         else if (row.order_id) openDetailById(row.order_id)
         return
@@ -1775,12 +1776,25 @@ const App = {
       return base + '全日¥' + r.base_price + '/日'
     }
 
+    function sourceIsDirect(src) {
+      if (!src) return true
+      const ch = channels.value.find((c) => c.name === src)
+      return !ch || ch.repay_type === 'direct'
+    }
+    // 日租/钟点房：非直接到账渠道不可选先付，自动切换为退房结算
+    function syncSettleByChannel() {
+      const f = orderDialog.form
+      if (f.order_type !== 'long_term' && f.settle_mode === 'once' && !sourceIsDirect(f.guest_source)) {
+        f.settle_mode = 'ondeparture'
+      }
+    }
     function onOrderTypeChange() {
       const f = orderDialog.form
       const t = f.order_type
-      if (t === 'long_term' && !['once', 'daily'].includes(f.settle_mode)) f.settle_mode = 'daily'
+      if (t === 'long_term' && !['once', 'daily', 'ondeparture'].includes(f.settle_mode)) f.settle_mode = 'daily'
       // 日租与钟点房默认退房结算
       if (t !== 'long_term' && !['once', 'ondeparture'].includes(f.settle_mode)) f.settle_mode = 'ondeparture'
+      syncSettleByChannel()
       syncPrice()
       fetchAvailableRooms()
     }
@@ -1958,8 +1972,7 @@ const App = {
     const detailPaySaving = ref(false)
     const checkoutDialog = reactive({ visible: false, order: null, amount: 0, refund: 0, endDate: Date.now(), endTime: '12:00', saving: false })
     const cancelDialog = reactive({ visible: false, order: null, refund: 0, saving: false })
-    const detailSourcePicker = ref(false)
-
+    
     const extendDialog = reactive({ visible: false, order: null, count: 1, amount: 0, amountTouched: false, saving: false })
     const orderEdit = reactive({
       enabled: false, saving: false, settled: false,
@@ -2041,22 +2054,6 @@ const App = {
       orderEdit.form.total_price = orderEditSuggested.value
     }
 
-    async function updateOrderSource(source) {
-      const o = detailDialog.order
-      if (!o) return
-      try {
-        const updated = await api.put('/orders/' + o.id, { guest_source: source })
-        o.guest_source = updated.guest_source
-        notify('客源已更新')
-      } catch (e) { /* 拦截器已提示 */ }
-    }
-
-    function onDetailSourcePick({ selectedOptions }) {
-      if (selectedOptions && selectedOptions.length) {
-        updateOrderSource(selectedOptions[0].value)
-      }
-      detailSourcePicker.value = false
-    }
 
     function onCellClick(room, day) {
       if (room.status === '维修') {
@@ -2370,7 +2367,6 @@ const App = {
         guest_name: o.guest_name || '',
         guest_phone: o.guest_phone || '',
         guest_source: o.guest_source || '',
-        recorded_income: o.recorded_income || 0,
         remark: o.remark || '',
         start_timestamp: (o.start_timestamp || 0) * 1000,
         end_timestamp: (o.end_timestamp || 0) * 1000,
@@ -2473,7 +2469,7 @@ const App = {
       fmtMoney, fmtTime, fmtDate, fmtStayTime, fmtStayRange, orderDurationLabel, orderTypeLabel, orderStatusType,
       orderList, orderListLoading, orderFilters, loadOrders, resetOrders,
       orderDialog, availableRooms, availableLoading, noRoom, selectedRoom,
-      orderStartSec, orderEndSec, suggestedPrice, roomOptionLabel, onOrderTypeChange,
+      orderStartSec, orderEndSec, suggestedPrice, roomOptionLabel, onOrderTypeChange, sourceIsDirect, syncSettleByChannel,
       openCreateOrder, resetPrice, saveOrder,
       detailDialog, openDetailByOrder, checkoutDialog, confirmScheduledCheckout,
       segTitle, segKindLabel, segSettleLabel, segRepayLabel, segExpLabel,
@@ -2489,8 +2485,7 @@ const App = {
       dateStrOf, datetimeStrOf, parseLocalDate, parseLocalDateTime,
       roomPickerShow, roomPickerColumns, onRoomPickConfirm,
       guestSourcePicker, guestSourceColumns, onGuestSourcePick,
-      detailSourcePicker, onDetailSourcePick, updateOrderSource,
-      dbInfo, backingUp, downloadBackup, qrSrc,
+            dbInfo, backingUp, downloadBackup, qrSrc,
       revenueData, revenueLoading, revenueFilters, revenueYears, revenueRange, loadRevenue,
       expenseDialog, openAddExpense, openEditExpense, saveExpense, removeExpense, onRevenueRowClick,
       entryDetail, openEntryDetail,
@@ -2555,7 +2550,7 @@ const App = {
           <el-option value="all" label="全部门店" />
               <el-option v-for="s in stores" :key="s.id" :label="s.name" :value="s.id" />
             </el-select>
-            <el-input v-if="!isMobile" v-model="roomFilters.keyword" placeholder="房号/名称" clearable
+            <el-input v-if="!isMobile" v-model="roomFilters.keyword" placeholder="房号/房型" clearable
                       style="width: 150px" @keyup.enter="loadRoomList" @clear="loadRoomList" />
             <el-button v-if="!isMobile" type="primary" @click="loadRoomList">查询</el-button>
             <el-button v-if="!isMobile" type="primary" plain @click="openBatchEdit">批量编辑</el-button>
@@ -2563,7 +2558,7 @@ const App = {
           </div>
         </div>
         <div v-if="isMobile" class="m-room-kw-row">
-          <el-input v-model="roomFilters.keyword" placeholder="房号/名称" clearable
+          <el-input v-model="roomFilters.keyword" placeholder="房号/房型" clearable
                     @keyup.enter="loadRoomList" @clear="loadRoomList" />
           <el-button size="small" type="primary" style="flex: 1" @click="loadRoomList">查询</el-button>
         </div>
@@ -2619,7 +2614,6 @@ const App = {
         <div v-else class="m-rooms">
           <div class="m-room-card" v-for="room in roomList" :key="room.id">
             <div class="m-room-head">
-            <span v-if="room.need_clean" class="clean-mark" style="margin-left:auto;">需打扫</span>
               <span class="m-room-no">{{ room.room_number }}<span v-if="!roomStoreFilter" class="room-store-mark">（{{ storeName(room.store_id) }}）</span></span>
               <span class="m-room-name">{{ room.room_category }}</span>
               <span class="m-room-status" :class="roomStatusMeta(room).cls">{{ roomStatusMeta(room).text }}</span>
@@ -2630,6 +2624,7 @@ const App = {
               <div v-if="room.remark" class="m-room-remark">{{ room.remark }}</div>
             </div>
             <div class="m-room-actions">
+              <span class="m-clean-label" :class="{ 'clean-on': room.need_clean }">{{ room.need_clean ? '需打扫' : '已打扫' }}</span>
               <van-switch v-model="room.need_clean" :active-value="1" :inactive-value="0" size="20px"
                           @update:model-value="(v) => toggleRoomClean(room, v)" />
               <van-button size="small" round type="primary" @click="openEditRoom(room)">编辑</van-button>
@@ -3373,6 +3368,7 @@ const App = {
             <span class="m-room-no">{{ room.room_number }}</span>
             <span class="m-room-name">{{ room.room_name }}</span>
             <van-tag type="primary" plain>{{ room.room_category }}</van-tag>
+            <span v-if="room.need_clean" class="clean-mark">需打扫</span>
           </div>
           <div class="m-room-segs">
             <div v-for="seg in mobileSegments(room)" :key="seg.order_no + '-' + seg.start"
@@ -3463,9 +3459,10 @@ const App = {
               <template v-if="orderDialog.form.order_type === 'long_term'">
                 <van-radio name="once">一次性</van-radio>
                 <van-radio name="daily">日结</van-radio>
+                <van-radio name="ondeparture">退房结算</van-radio>
               </template>
               <template v-else>
-                <van-radio name="once">入住前实收</van-radio>
+                <van-radio name="once" :disabled="!sourceIsDirect(orderDialog.form.guest_source)">入住前实收</van-radio>
                 <van-radio name="ondeparture">退房结算</van-radio>
               </template>
             </van-radio-group>
@@ -3828,9 +3825,10 @@ const App = {
             <template v-if="orderDialog.form.order_type === 'long_term'">
               <el-option value="once" label="一次性先付" />
               <el-option value="daily" label="日结" />
+              <el-option value="ondeparture" label="退房结算" />
             </template>
             <template v-else>
-              <el-option value="once" label="入住前实收" />
+              <el-option value="once" label="入住前实收" :disabled="!sourceIsDirect(orderDialog.form.guest_source)" />
               <el-option value="ondeparture" label="退房结算" />
             </template>
           </el-select>
@@ -3851,7 +3849,8 @@ const App = {
           <el-input v-model="orderDialog.form.guest_phone" placeholder="选填" maxlength="20" />
         </el-form-item>
         <el-form-item label="客人来源">
-          <el-select v-model="orderDialog.form.guest_source" placeholder="选择入住渠道" style="width: 100%">
+          <el-select v-model="orderDialog.form.guest_source" placeholder="选择入住渠道" style="width: 100%"
+                     @change="syncSettleByChannel">
             <el-option v-for="s in sourceOptions" :key="s" :label="s" :value="s" />
           </el-select>
         </el-form-item>
@@ -3930,12 +3929,7 @@ const App = {
 
           <el-descriptions-item label="客人">{{ detailDialog.order.guest_name }}</el-descriptions-item>
           <el-descriptions-item label="手机号">{{ detailDialog.order.guest_phone || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="客源">
-            <el-select v-model="detailDialog.order.guest_source" size="small" style="width: 110px"
-                       @change="updateOrderSource">
-              <el-option v-for="s in sourceOptions" :key="s" :label="s" :value="s" />
-            </el-select>
-          </el-descriptions-item>
+          <el-descriptions-item label="客源">{{ detailDialog.order.guest_source || '-' }}</el-descriptions-item>
           <el-descriptions-item label="入住时间">{{ fmtStayTime(detailDialog.order, 'start') }}</el-descriptions-item>
           <el-descriptions-item label="离店时间">{{ fmtStayTime(detailDialog.order, 'end') }}</el-descriptions-item>
           <el-descriptions-item label="总价">
@@ -4011,9 +4005,10 @@ const App = {
               <template v-if="orderEdit.form.order_type === 'long_term'">
                 <el-option value="once" label="一次性先付" />
                 <el-option value="daily" label="日结" />
+                <el-option value="ondeparture" label="退房结算" />
               </template>
               <template v-else>
-                <el-option value="once" label="入住前实收" />
+                <el-option value="once" label="入住前实收" :disabled="!sourceIsDirect(orderEdit.form.guest_source)" />
                 <el-option value="ondeparture" label="退房结算" />
               </template>
             </el-select>
@@ -4023,13 +4018,6 @@ const App = {
           </el-form-item>
           <el-form-item label="手机号">
             <el-input v-model="orderEdit.form.guest_phone" maxlength="20" />
-          </el-form-item>
-          <el-form-item label="客人来源">
-            <el-select v-model="orderEdit.form.guest_source" style="width: 100%"
-                       :disabled="(orderEdit.form.recorded_income || 0) > 0">
-              <el-option v-for="s in sourceOptions" :key="s" :label="s" :value="s" />
-            </el-select>
-            <span v-if="(orderEdit.form.recorded_income || 0) > 0" class="tip" style="font-size: 12px;">已计入收入，不可修改渠道</span>
           </el-form-item>
           <el-form-item label="入住日期">
             <el-date-picker v-model="orderEdit.form.start_date" type="date" value-format="x" style="width: 100%" />
@@ -4113,8 +4101,7 @@ const App = {
 
             <van-cell title="客人" :value="detailDialog.order.guest_name" />
             <van-cell title="手机号" :value="detailDialog.order.guest_phone || '-'" />
-            <van-cell title="客源" :value="detailDialog.order.guest_source || '请选择'" is-link
-                      @click="detailSourcePicker = true" />
+            <van-cell title="客源" :value="detailDialog.order.guest_source || '-'" />
             <van-cell title="入住时间" :value="fmtStayTime(detailDialog.order, 'start')" />
             <van-cell title="离店时间" :value="fmtStayTime(detailDialog.order, 'end')" />
             <van-cell title="金额"
@@ -4214,9 +4201,10 @@ const App = {
                 <template v-if="orderEdit.form.order_type === 'long_term'">
                   <van-radio name="once">一次性</van-radio>
                   <van-radio name="daily">日结</van-radio>
+                  <van-radio name="ondeparture">退房结算</van-radio>
                 </template>
                 <template v-else>
-                  <van-radio name="once">入住前实收</van-radio>
+                  <van-radio name="once" :disabled="!sourceIsDirect(orderEdit.form.guest_source)">入住前实收</van-radio>
                   <van-radio name="ondeparture">退房结算</van-radio>
                 </template>
               </van-radio-group>
@@ -4228,13 +4216,6 @@ const App = {
             <div class="m-form-row">
               <span class="m-label">手机号</span>
               <input class="m-input" v-model="orderEdit.form.guest_phone" type="tel" maxlength="20" />
-            </div>
-            <div class="m-form-row">
-              <span class="m-label">客人来源</span>
-              <select class="m-input" v-model="orderEdit.form.guest_source"
-                      :disabled="(orderEdit.form.recorded_income || 0) > 0">
-                <option v-for="s in sourceOptions" :key="s" :value="s">{{ s }}</option>
-              </select>
             </div>
             <div class="m-form-row">
               <span class="m-label">入住日期</span>
@@ -4285,11 +4266,6 @@ const App = {
                         @click="saveOrderEdit">保存修改</van-button>
           </div>
         </template>
-      </van-popup>
-      <!-- 移动端：详情客源选择器 -->
-      <van-popup v-model:show="detailSourcePicker" position="bottom" round>
-        <van-picker :columns="guestSourceColumns" @confirm="onDetailSourcePick"
-                    @cancel="detailSourcePicker = false" />
       </van-popup>
 
 

@@ -719,9 +719,12 @@ body {
 
 .m-room-actions {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
   gap: 8px;
 }
+.m-clean-label { font-size: 12px; color: #909399; white-space: nowrap; }
+.m-clean-label.clean-on { color: #e6a23c; font-weight: 600; }
 
 .m-popup { padding-bottom: env(safe-area-inset-bottom); }
 

@@ -60,7 +60,7 @@ def get_all_rooms(conn: sqlite3.Connection, status: str | None = None,
                   store_id: int | None = None,
                   active: int | None = None,
                   need_clean: int | None = None) -> list[dict]:
-    """房间列表，支持按状态、启用/停用、需打扫、房号/名称关键字、门店筛选。"""
+    """房间列表，支持按状态、启用/停用、需打扫、房号/房型关键字、门店筛选。"""
     sql = ("SELECT r.*, (SELECT COUNT(*) FROM orders o WHERE o.room_id = r.id"
            " AND o.status IN ('已预订', '已入住')) AS active_orders"
            " FROM rooms r WHERE 1=1")
@@ -80,7 +80,7 @@ def get_all_rooms(conn: sqlite3.Connection, status: str | None = None,
         sql += " AND r.need_clean = ?"
         params.append(need_clean)
     if keyword:
-        sql += " AND (r.room_number LIKE ? OR r.room_name LIKE ?)"
+        sql += " AND (r.room_number LIKE ? OR r.room_category LIKE ?)"
         kw = f"%{keyword}%"
         params.extend([kw, kw])
     sql += " ORDER BY CAST(room_number AS INTEGER), room_number"
@@ -323,6 +323,15 @@ def create_order(conn: sqlite3.Connection, data: schemas.OrderCreate) -> dict:
             raise AppError("房间处于维修状态，无法下单")
         if data.settle_mode not in ("once", "daily", "ondeparture"):
             raise AppError("结算方式只能是 once / daily / ondeparture")
+        # 日租/钟点房：只有直接到账渠道（或未选渠道现金）才允许先付，避免进入回款等待流程
+        if data.order_type in (schemas.OrderType.FULL_DAY, schemas.OrderType.HOURLY) and data.settle_mode == "once":
+            _src = (data.guest_source or "").strip()
+            if _src:
+                _ch = conn.execute(
+                    "SELECT repay_type FROM channels WHERE name = ? COLLATE NOCASE LIMIT 1", (_src,)
+                ).fetchone()
+                if _ch is not None and _ch["repay_type"] != "direct":
+                    raise AppError("该渠道为延迟到账，日租/钟点房仅支持退房结算", status_code=400)
 
         start = data.start_timestamp
         if data.order_type in (schemas.OrderType.FULL_DAY, schemas.OrderType.LONG_TERM):
@@ -457,6 +466,18 @@ def update_order(conn: sqlite3.Connection, order_id: int,
                     ).fetchone()
                     if ch_row is not None:
                         channel_id = ch_row["id"]
+
+        # 日租/钟点房转入先付：仅直接到账渠道允许（历史无变动编辑不误伤）
+        _new_settle = fields.get("settle_mode", order.get("settle_mode", "once"))
+        _source_changed = new_source != old_source
+        if order_type in ("full_day", "hourly") and _new_settle == "once" and (
+                order.get("settle_mode") != "once" or _source_changed):
+            if new_source:
+                _ch = conn.execute(
+                    "SELECT repay_type FROM channels WHERE name = ? COLLATE NOCASE LIMIT 1", (new_source,)
+                ).fetchone()
+                if _ch is not None and _ch["repay_type"] != "direct":
+                    raise AppError("该渠道为延迟到账，日租/钟点房仅支持退房结算", status_code=400)
 
         # 金额：手动指定优先；时间/房间/计费方式变更时按房间价格自动重算
         time_fields_changed = any(
