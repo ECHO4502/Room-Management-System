@@ -191,3 +191,15 @@ CREATE TABLE IF NOT EXISTS order_settle_segments (
 );
 CREATE INDEX IF NOT EXISTS idx_settle_seg_order ON order_settle_segments(order_id);
 """
+
+# 登录会话（预留）：默认不启用；未来公网部署启用登录后使用
+AUTH_SESSIONS_TABLE_DDL = """
+CREATE TABLE IF NOT EXISTS auth_sessions (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_hash   TEXT    NOT NULL UNIQUE,
+    created_at   INTEGER NOT NULL,
+    expires_at   INTEGER NOT NULL,
+    last_used_at INTEGER
+);
+"""
+

@@ -26,12 +26,13 @@ if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 import crud
+import auth
 import database
 import logger as app_logger
 import schemas
@@ -39,7 +40,7 @@ import tray
 import utils
 from utils import AppError
 
-APP_VERSION = "1.3.10"
+APP_VERSION = "1.4.0"
 
 # 日志系统：控制台 + logs/app.log（10MB 滚动）
 app_logger.setup()
@@ -107,25 +108,195 @@ def _with_conn(fn: Callable):
         conn.close()
 
 
+_LOCAL_NETS = None
+
+def _is_local_ip(ip: str) -> bool:
+    """本机回环或局域网私有网段视为安全本地访问。
+    不使用 ipaddress.is_private（Python 3.13 会把文档/测试网段也算入）。"""
+    ip = (ip or "").strip().lower()
+    if ip in ("localhost",):
+        return True
+    try:
+        import ipaddress
+        global _LOCAL_NETS
+        if _LOCAL_NETS is None:
+            _LOCAL_NETS = [
+                ipaddress.ip_network("127.0.0.0/8"),
+                ipaddress.ip_network("10.0.0.0/8"),
+                ipaddress.ip_network("172.16.0.0/12"),
+                ipaddress.ip_network("192.168.0.0/16"),
+                ipaddress.ip_network("169.254.0.0/16"),
+                ipaddress.ip_network("::1/128"),
+                ipaddress.ip_network("fc00::/7"),
+                ipaddress.ip_network("fe80::/10"),
+            ]
+        addr = ipaddress.ip_address(ip)
+        if addr.version == 6 and addr.ipv4_mapped is not None:
+            addr = addr.ipv4_mapped
+        return any(addr in net for net in _LOCAL_NETS)
+    except Exception:
+        return False
+
+
+def _is_local_request(request: Request) -> bool:
+    """判断当前请求是否来自本机/局域网。
+    内网穿透/反向代理会带来 X-Forwarded-For / X-Real-IP，
+    非私有网段即视为公网访问。"""
+    for header in ("x-forwarded-for", "x-real-ip"):
+        val = request.headers.get(header)
+        if val:
+            first = val.split(",")[0].strip()
+            return _is_local_ip(first)
+    host = request.client.host if request.client else ""
+    return _is_local_ip(host)
+
+
+def _current_local(request: Request) -> bool:
+    """优先读取中间件判定的本地访问标识，避免下游丢失转发头。"""
+    val = getattr(request.state, "local_access", None)
+    if val is None:
+        val = _is_local_request(request)
+        request.state.local_access = val
+    return val
+
+
+def require_local_access(request: Request):
+    """仅允许本机/局域网访问的接口保护：公网访问返回 404。"""
+    if not _current_local(request):
+        raise HTTPException(status_code=404, detail="接口不存在")
+
+
+# 登录鉴权网关（预留，默认关闭）：启用后除 /api/auth/* 外所有 API 需登录（Cookie 会话）
+@app.middleware("http")
+async def _auth_gate(request: Request, call_next):
+    request.state.local_access = _is_local_request(request)
+    path = request.url.path
+    if path.startswith("/api") and not path.startswith("/api/auth"):
+        conn = database.get_connection()
+        try:
+            if auth.is_enabled(conn) and not auth.session_valid(
+                    conn, request.cookies.get(auth.SESSION_COOKIE)):
+                return JSONResponse({"detail": "未登录或登录已过期"}, status_code=401)
+        finally:
+            conn.close()
+    return await call_next(request)
+
+@app.get("/api/auth/status", tags=["鉴权"])
+def api_auth_status(request: Request):
+    """鉴权状态：是否已启用、是否需首次设置、当前是否已登录。"""
+    def fn(conn):
+        return {
+            "enabled": auth.is_enabled(conn),
+            "needs_setup": auth.needs_setup(conn),
+            "authenticated": auth.is_enabled(conn) and auth.session_valid(
+                conn, request.cookies.get(auth.SESSION_COOKIE)),
+            "local_access": _current_local(request),
+        }
+    return _with_conn(fn)
+
+@app.post("/api/auth/setup", tags=["鉴权"])
+def api_auth_setup(request: Request, data: schemas.AuthSetupRequest):
+    """首次启用：设置管理员账号与密码（仅在已启用且未设置账号时可调）。"""
+    def fn(conn):
+        if not auth.is_enabled(conn):
+            raise AppError("登录功能未启用", status_code=403)
+        if auth.has_account(conn):
+            raise AppError("账号已设置，请直接登录", status_code=409)
+        try:
+            auth.setup_account(conn, data.username, data.password)
+        except ValueError as exc:
+            raise AppError(str(exc), status_code=400) from exc
+        token = auth.create_session(conn)
+        return token
+    token = _with_conn(fn)
+    resp = JSONResponse({"ok": True, "username": data.username})
+    resp.set_cookie(auth.SESSION_COOKIE, token, max_age=auth.COOKIE_MAX_AGE,
+                    httponly=True, samesite="lax", path="/", secure=(request.url.scheme == "https"))
+    return resp
+
+@app.post("/api/auth/login", tags=["鉴权"])
+def api_auth_login(request: Request, data: schemas.AuthLoginRequest):
+    """账号密码登录：登录后客户端无需保存 token。"""
+    ip = request.client.host if request.client else ""
+    def fn(conn):
+        if not auth.is_enabled(conn):
+            raise AppError("登录功能未启用", status_code=403)
+        wait = auth.login_blocked(ip)
+        if wait:
+            raise AppError(f"尝试次数过多，请 {wait} 秒后重试", status_code=429)
+        if auth.get_username(conn) != data.username.strip():
+            auth.record_failure(ip)
+            raise AppError("账号或密码错误", status_code=401)
+        stored = auth.get_password_hash(conn)
+        if not stored or not auth.verify_password(data.password, stored):
+            auth.record_failure(ip)
+            raise AppError("账号或密码错误", status_code=401)
+        auth.reset_failures(ip)
+        return auth.create_session(conn)
+    token = _with_conn(fn)
+    resp = JSONResponse({"ok": True, "username": data.username.strip()})
+    resp.set_cookie(auth.SESSION_COOKIE, token, max_age=auth.COOKIE_MAX_AGE,
+                    httponly=True, samesite="lax", path="/", secure=(request.url.scheme == "https"))
+    return resp
+
+@app.post("/api/auth/logout", tags=["鉴权"])
+def api_auth_logout(request: Request):
+    """登出：清除会话与 Cookie。"""
+    token = request.cookies.get(auth.SESSION_COOKIE)
+    _with_conn(lambda c: auth.revoke_session(c, token))
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(auth.SESSION_COOKIE, path="/")
+    return resp
+
+@app.put("/api/auth/password", tags=["鉴权"])
+def api_auth_change_password(request: Request, data: schemas.AuthPasswordRequest):
+    """修改管理员密码（需已登录），修改后需重新登录。"""
+    token = request.cookies.get(auth.SESSION_COOKIE)
+    def fn(conn):
+        if not auth.is_enabled(conn):
+            raise AppError("登录功能未启用", status_code=403)
+        if not auth.session_valid(conn, token):
+            raise AppError("未登录或登录已过期", status_code=401)
+        stored = auth.get_password_hash(conn)
+        if stored and not auth.verify_password(data.old_password, stored):
+            raise AppError("旧密码不正确", status_code=401)
+        try:
+            auth.setup_account(conn, auth.get_username(conn), data.new_password)
+        except ValueError as exc:
+            raise AppError(str(exc), status_code=400) from exc
+        auth.clear_sessions(conn)
+    _with_conn(fn)
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(auth.SESSION_COOKIE, path="/")
+    return resp
+
 # ---------------- 统计 ----------------
 
 @app.get("/api/db-info", tags=["系统"])
-def api_db_info():
-    """数据库概览：房间/订单记录数、系统版本、备份目录。"""
-    return _with_conn(lambda c: {
-        "version": APP_VERSION,
-        "author": "ECHO4502",
-        "rooms": c.execute(
-            "SELECT COUNT(*) AS c FROM rooms WHERE is_active = 1"
-        ).fetchone()["c"],
-        "orders": c.execute("SELECT COUNT(*) AS c FROM orders").fetchone()["c"],
-        "db_path": str(database.get_db_path()),
-        "backups_dir": str(database.get_db_path().parent / "backups"),
-        "access_url": get_access_url(),
-    })
+def api_db_info(request: Request):
+    """数据库概览：房间/订单记录数、系统版本。
+    公网访问不返回数据库路径、备份目录与局域网地址。"""
+    local = _current_local(request)
+    def fn(c):
+        info = {
+            "version": APP_VERSION,
+            "author": "ECHO4502",
+            "local_access": local,
+            "rooms": c.execute(
+                "SELECT COUNT(*) AS c FROM rooms WHERE is_active = 1"
+            ).fetchone()["c"],
+            "orders": c.execute("SELECT COUNT(*) AS c FROM orders").fetchone()["c"],
+        }
+        if local:
+            info["db_path"] = str(database.get_db_path())
+            info["backups_dir"] = str(database.get_db_path().parent / "backups")
+            info["access_url"] = get_access_url()
+        return info
+    return _with_conn(fn)
 
 
-@app.get("/api/qrcode", tags=["系统"])
+
+@app.get("/api/qrcode", tags=["系统"], dependencies=[Depends(require_local_access)])
 def api_qrcode():
     """返回包含局域网访问地址的二维码 PNG 图片。"""
     try:
@@ -135,7 +306,7 @@ def api_qrcode():
     return Response(content=img_bytes, media_type="image/png")
 
 
-@app.get("/api/backup/download", tags=["系统"])
+@app.get("/api/backup/download", tags=["系统"], dependencies=[Depends(require_local_access)])
 def api_backup_download():
     """触发备份并返回 ZIP 文件流供浏览器下载。"""
     try:
@@ -155,7 +326,7 @@ def api_alerts(store_id: Optional[int] = None):
     return _with_conn(lambda c: crud.get_alerts(c, store_id))
 
 
-@app.post("/api/backup/manual", tags=["系统"])
+@app.post("/api/backup/manual", tags=["系统"], dependencies=[Depends(require_local_access)])
 def api_backup_manual(reason: str = Query("手动备份")):
     """按原因手动备份（自动维护开启前、读取备份前等调用），返回备份文件信息。"""
     zip_path = utils.backup_database(
@@ -164,7 +335,7 @@ def api_backup_manual(reason: str = Query("手动备份")):
     return {"name": zip_path.name, "path": str(zip_path)}
 
 
-@app.get("/api/backups", tags=["系统"])
+@app.get("/api/backups", tags=["系统"], dependencies=[Depends(require_local_access)])
 def api_list_backups():
     """列出备份目录中的备份文件（按时间倒序），并读取压缩包内备份说明。"""
     backup_dir = database.get_db_path().parent / "backups"
@@ -196,7 +367,7 @@ def api_list_backups():
     return out
 
 
-@app.post("/api/backup/restore", tags=["系统"])
+@app.post("/api/backup/restore", tags=["系统"], dependencies=[Depends(require_local_access)])
 def api_restore_backup(data: schemas.RestoreBackupRequest):
     """读取备份：恢复前自动备份当前数据（读取备份前保留）。"""
     utils.backup_database(
@@ -206,7 +377,7 @@ def api_restore_backup(data: schemas.RestoreBackupRequest):
     database.init_db()
     return {"ok": True, "message": "备份已恢复，请刷新页面查看"}
 
-@app.post("/api/backup/delete", tags=["系统"])
+@app.post("/api/backup/delete", tags=["系统"], dependencies=[Depends(require_local_access)])
 def api_delete_backup(data: schemas.RestoreBackupRequest):
     """删除备份目录中的指定备份文件（仅允许删除备份目录内的 zip，防路径穿越）。"""
     backup_dir = (database.get_db_path().parent / "backups").resolve()

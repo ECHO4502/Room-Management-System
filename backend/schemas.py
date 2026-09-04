@@ -500,3 +500,18 @@ class OrderAutomationRequest(BaseModel):
     checkin_enabled: bool = Field(False)
     depart_enabled: bool = Field(False)
     depart_action: str = Field("checkout", pattern="^(checkout|extend)$")
+
+# ---------------- 登录鉴权（预留） ----------------
+
+class AuthSetupRequest(BaseModel):
+    """首次启用时设置管理员账号与密码。"""
+    username: str = Field(..., min_length=2, max_length=32)
+    password: str = Field(..., min_length=8, max_length=128)
+
+class AuthLoginRequest(BaseModel):
+    username: str = Field(..., min_length=2, max_length=32)
+    password: str = Field(..., min_length=1, max_length=128)
+
+class AuthPasswordRequest(BaseModel):
+    old_password: str = Field("", max_length=128)
+    new_password: str = Field(..., min_length=8, max_length=128)

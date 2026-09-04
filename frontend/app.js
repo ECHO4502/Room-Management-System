@@ -158,6 +158,12 @@ const App = {
     const statusTab = ref('grid') // grid | timeline
     const isMobile = ref(window.innerWidth < 768)
     const channels = ref([])
+const authMode = ref('') // '' | 'login' | 'setup'
+const authForm = reactive({ username: '', password: '', confirm: '' })
+const authError = ref('')
+const localAccess = ref(true)
+const authSaving = ref(false)
+
 
     function sourceColor(src) {
       if (!src) return '#909399'
@@ -2452,12 +2458,48 @@ const App = {
       } catch (e) { /* 拦截器已提示 */ }
     }
 
-    onMounted(() => {
-      loadAll().catch(() => {})
+    async function submitAuth() {
+      authError.value = ''
+      const u = authForm.username.trim()
+      const p = authForm.password
+      if (!u || !p) { authError.value = '请输入账号与密码'; return }
+      if (authMode.value === 'setup' && p !== authForm.confirm) {
+        authError.value = '两次输入的密码不一致'
+        return
+      }
+      authSaving.value = true
+      try {
+        if (authMode.value === 'setup') {
+          await api.post('/auth/setup', { username: u, password: p })
+        } else {
+          await api.post('/auth/login', { username: u, password: p })
+        }
+        authMode.value = ''
+        await loadAll().catch(() => {})
+      } catch (e) {
+        authError.value = (e.response && e.response.data && e.response.data.detail) || '操作失败，请重试'
+      } finally {
+        authSaving.value = false
+      }
+    }
+    onMounted(async () => {
+      try {
+        const s = await api.get('/auth/status')
+        localAccess.value = s.local_access !== false
+        if (!s.enabled || s.authenticated) {
+          loadAll().catch(() => {})
+        } else {
+          authMode.value = s.needs_setup ? 'setup' : 'login'
+        }
+      } catch (e) {
+        loadAll().catch(() => {})
+      }
     })
 
     return {
       hotelName, activeView, switchView,
+      authMode, authForm, authError, authSaving, submitAuth,
+      localAccess,
       displayName, settleModeLabel,
       stats, rooms, days, gridStyle, loading,
       statDateLabel,
@@ -2514,6 +2556,32 @@ const App = {
   },
   template: `
   <div class="page" v-loading="loading">
+    <div v-if="authMode" class="auth-screen">
+      <div class="auth-card">
+        <div class="auth-brand">{{ hotelName }}</div>
+        <template v-if="authMode === 'setup'">
+          <p class="auth-tip">首次启用：请设置管理员账号与密码</p>
+          <el-input v-model="authForm.username" placeholder="管理员账号" maxlength="32"
+                    clearable @keyup.enter="submitAuth" />
+          <el-input v-model="authForm.password" type="password" show-password
+                    placeholder="密码（8 位以上，含字母与数字）" @keyup.enter="submitAuth" />
+          <el-input v-model="authForm.confirm" type="password" show-password
+                    placeholder="确认密码" @keyup.enter="submitAuth" />
+          <el-button type="primary" style="width: 100%" :loading="authSaving"
+                     @click="submitAuth">设置并进入</el-button>
+        </template>
+        <template v-else>
+          <p class="auth-tip">请输入账号密码登录</p>
+          <el-input v-model="authForm.username" placeholder="账号" maxlength="32"
+                    clearable @keyup.enter="submitAuth" />
+          <el-input v-model="authForm.password" type="password" show-password
+                    placeholder="密码" @keyup.enter="submitAuth" />
+          <el-button type="primary" style="width: 100%" :loading="authSaving"
+                     @click="submitAuth">登录</el-button>
+        </template>
+        <p v-if="authError" class="auth-error">{{ authError }}</p>
+      </div>
+    </div>
     <!-- 房间管理（PC / 移动端共用） -->
     <template v-if="activeView === 'rooms'">
       <van-nav-bar v-if="isMobile" title="房间管理" left-arrow @click-left="activeView = 'status'">
@@ -2910,11 +2978,11 @@ const App = {
               <div class="s-stat-l">系统版本</div>
             </div>
           </div>
-          <p class="tip">数据库：{{ dbInfo.db_path }}</p>
-          <p class="tip">备份目录：{{ dbInfo.backups_dir }}</p>
+          <p class="tip" v-if="localAccess">数据库：{{ dbInfo.db_path }}</p>
+          <p class="tip" v-if="localAccess">备份目录：{{ dbInfo.backups_dir }}</p>
           <p class="tip">系统作者：ECHO4502</p>
         </div>
-        <div class="panel">
+        <div class="panel" v-if="localAccess">
           <div class="panel-head"><span class="panel-title">数据备份</span></div>
           <div style="display: flex; gap: 10px; flex-wrap: wrap;">
             <el-button type="primary" :loading="backingUp" @click="downloadBackup">一键备份</el-button>
@@ -2923,7 +2991,7 @@ const App = {
           <p class="tip">一键备份会把 ZIP 压缩包（内含 hotel.db）保存到 data/backups/ 目录；系统每次启动也会自动备份（保留最近 7 份）。</p>
           <p class="tip">备份文件名包含时间与原因；读取备份前会自动保留当前数据。</p>
         </div>
-        <div class="panel" v-if="!isMobile">
+        <div class="panel" v-if="localAccess && !isMobile">
           <div class="panel-head"><span class="panel-title">手机扫码访问</span></div>
           <div class="qr-box">
             <img v-if="qrSrc" :src="qrSrc" alt="手机访问二维码" class="qr-img" />

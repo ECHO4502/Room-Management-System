@@ -23,6 +23,7 @@ from models import (
     SETTINGS_TABLE_DDL,
     STORES_TABLE_DDL,
     ORDER_SETTLE_SEGMENTS_DDL,
+    AUTH_SESSIONS_TABLE_DDL,
 )
 
 # 首次启动写入的默认设置：(key, value, description)
@@ -35,7 +36,10 @@ DEFAULT_SETTINGS = [
     ("auto_checkin", "0", "全局自动维护：到入住时间自动办理入住（0/1）"),
     ("auto_master", "0", "自动维护总开关（0/1），关闭时全局自动维护不执行"),
     ("auto_checkout", "0", "全局自动维护：到退房时间自动办理退房（0/1）"),
-    ("auto_extend", "0", "全局自动维护：到期自动续住（0/1）"),]
+    ("auto_extend", "0", "全局自动维护：到期自动续住（0/1）"),
+    ("auth_enabled", "0", "预留登录开关（0 关闭 / 1 启用后 API 需登录）"),
+    ("auth_username", "", "管理员登录账号（空表示尚未设置，首次启用时需设置）"),
+    ("auth_password_hash", "", "管理员登录密码哈希（PBKDF2，不存明文）"),]
 
 # 首次启动自动创建的示例房间：(room_number, room_name, room_category, base_price)
 # 所有房间都是普通房间，base_price 为基础价（全日租按晚、钟点房按小时计费）
@@ -108,6 +112,7 @@ def init_db(db_path=None) -> Path:
         _migrate_settle_snapshot(conn)   # 订单原结算快照字段（续住分段专项）
         _migrate_channel_id_normalize(conn)  # 历史脏数据：channel_id 回填为整数
         _migrate_legacy_repay_sync(conn)     # 旧版本数据自动同步：回款状态/冗余日志
+        conn.executescript(AUTH_SESSIONS_TABLE_DDL)  # 登录会话表（预留）
         _ensure_indexes(conn)          # 重建索引（迁移重建表后会丢失）
         _seed_settings(conn)
         _seed_initial_data(conn)

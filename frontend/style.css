@@ -1300,3 +1300,29 @@ body {
 .seg-status { color: #e6a23c; }
 .seg-remark { color: #909399; font-style: normal; }
 
+/* 登录 / 首次设置页 */
+.auth-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 5000;
+  background: #f2f3f5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+.auth-card {
+  width: 360px;
+  max-width: 100%;
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, .12);
+  padding: 28px 24px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.auth-brand { font-size: 20px; font-weight: 700; text-align: center; color: #303133; }
+.auth-tip { font-size: 13px; color: #606266; text-align: center; margin: 0 0 4px; }
+.auth-error { font-size: 13px; color: #f56c6c; text-align: center; margin: 0; }
